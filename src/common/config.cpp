@@ -539,9 +539,6 @@ void load(const std::filesystem::path& path) {
         if (!old_game_install_dir.empty()) {
             addGameInstallDir(old_game_install_dir);
             gui.as_table().erase("installDir");
-            std::ofstream file(path, std::ios::out);
-            file << data;
-            file.close();
         }
 
         const auto install_dir_array =
@@ -570,24 +567,6 @@ void load(const std::filesystem::path& path) {
 }
 void save(const std::filesystem::path& path) {
     toml::value data;
-
-    std::error_code error;
-    if (std::filesystem::exists(path, error)) {
-        try {
-            std::ifstream ifs;
-            ifs.exceptions(std::ifstream::failbit | std::ifstream::badbit);
-            ifs.open(path, std::ios_base::binary);
-            data = toml::parse(ifs, std::string{fmt::UTF(path.filename().u8string()).data});
-        } catch (const std::exception& ex) {
-            fmt::print("Exception trying to parse config file. Exception: {}\n", ex.what());
-            return;
-        }
-    } else {
-        if (error) {
-            fmt::print("Filesystem error: {}\n", error.message());
-        }
-        fmt::print("Saving new configuration file {}\n", fmt::UTF(path.u8string()));
-    }
 
     data["General"]["isPS4Pro"] = isNeo;
     data["General"]["Fullscreen"] = isFullscreen;
@@ -633,7 +612,7 @@ void save(const std::filesystem::path& path) {
         install_dirs.emplace_back(std::string{fmt::UTF(dirString.u8string()).data});
     }
     data["GUI"]["installDirs"] = install_dirs;
-
+    
     data["GUI"]["addonInstallDir"] =
         std::string{fmt::UTF(settings_addon_install_dir.u8string()).data};
     data["GUI"]["geometry_x"] = main_window_geometry_x;
