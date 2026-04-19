@@ -1,11 +1,11 @@
-// SPDX-FileCopyrightText: Copyright 2025 shadPS4 Emulator Project
+// SPDX-FileCopyrightText: Copyright 2025-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "common/alignment.h"
 #include "common/assert.h"
-#include "common/config.h"
 #include "common/debug.h"
 #include "common/elf_info.h"
+#include "core/emulator_settings.h"
 #include "core/file_sys/fs.h"
 #include "core/libraries/kernel/memory.h"
 #include "core/libraries/kernel/orbis_error.h"
@@ -27,6 +27,21 @@ MemoryManager::MemoryManager() {
         LOG_INFO(Kernel_Vmm, "{:#x} - {:#x}", region.lower(), region.upper());
     }
 
+    // Pre-initialize direct backing
+    auto total_size = ORBIS_KERNEL_TOTAL_MEM_DEV_PRO;
+    s32 extra_dmem = EmulatorSettings.GetExtraDmemInMBytes();
+    if (extra_dmem != 0) {
+        total_size += extra_dmem * 1_MB;
+    }
+    total_direct_size = total_size;
+    dmem_map.clear();
+    dmem_map.emplace(0, PhysicalMemoryArea{0, total_direct_size});
+
+    // Pre-initialize flexible backing
+    total_flexible_size = ORBIS_KERNEL_FLEXIBLE_MEMORY_SIZE;
+    fmem_map.clear();
+    fmem_map.emplace(total_size, PhysicalMemoryArea{total_size, total_flexible_size});
+
     ASSERT_MSG(Libraries::Kernel::sceKernelGetCompiledSdkVersion(&sdk_version) == 0,
                "Failed to get compiled SDK version");
 }
@@ -35,13 +50,14 @@ MemoryManager::~MemoryManager() = default;
 
 void MemoryManager::SetupMemoryRegions(u64 flexible_size, bool use_extended_mem1,
                                        bool use_extended_mem2) {
+    // Calculate actual direct and flexible memory sizes
     const bool is_neo = ::Libraries::Kernel::sceKernelIsNeoMode();
     auto total_size = is_neo ? ORBIS_KERNEL_TOTAL_MEM_PRO : ORBIS_KERNEL_TOTAL_MEM;
-    if (Config::isDevKitConsole()) {
+    if (EmulatorSettings.IsDevKit()) {
         total_size = is_neo ? ORBIS_KERNEL_TOTAL_MEM_DEV_PRO : ORBIS_KERNEL_TOTAL_MEM_DEV;
     }
-    s32 extra_dmem = Config::getExtraDmemInMbytes();
-    if (Config::getExtraDmemInMbytes() != 0) {
+    s32 extra_dmem = EmulatorSettings.GetExtraDmemInMBytes();
+    if (extra_dmem != 0) {
         LOG_WARNING(Kernel_Vmm,
                     "extraDmemInMbytes is {} MB! Old Direct Size: {:#x} -> New Direct Size: {:#x}",
                     extra_dmem, total_size, total_size + extra_dmem * 1_MB);
@@ -53,27 +69,26 @@ void MemoryManager::SetupMemoryRegions(u64 flexible_size, bool use_extended_mem1
     if (!use_extended_mem2 && !is_neo) {
         total_size -= 128_MB;
     }
-    total_flexible_size = flexible_size - ORBIS_FLEXIBLE_MEMORY_BASE;
+
+    // Update stored totals
+    total_flexible_size = flexible_size - ORBIS_KERNEL_FLEXIBLE_MEMORY_BASE;
+    ASSERT_MSG(total_flexible_size >= flexible_usage, "Unable to shrink flexible memory size");
+    u64 old_direct_size = total_direct_size;
     total_direct_size = total_size - flexible_size;
 
-    // Insert an area that covers the direct memory physical address block.
-    // Note that this should never be called after direct memory allocations have been made.
-    dmem_map.clear();
-    dmem_map.emplace(0, PhysicalMemoryArea{0, total_direct_size});
-
-    // Insert an area that covers the flexible memory physical address block.
-    // Note that this should never be called after flexible memory allocations have been made.
-    const auto remaining_physical_space = total_size - total_direct_size;
-    fmem_map.clear();
-    fmem_map.emplace(total_direct_size,
-                     PhysicalMemoryArea{total_direct_size, remaining_physical_space});
+    // Limit direct memory space to match actual limit
+    auto last_dmem_area = FindDmemArea(total_direct_size);
+    ASSERT_MSG(last_dmem_area->second.dma_type == PhysicalMemoryType::Free &&
+                   last_dmem_area->second.size >= old_direct_size - total_direct_size,
+               "Unable to shrink dmem map");
+    last_dmem_area->second.size -= (old_direct_size - total_direct_size);
 
     LOG_INFO(Kernel_Vmm, "Configured memory regions: flexible size = {:#x}, direct size = {:#x}",
              total_flexible_size, total_direct_size);
 }
 
 u64 MemoryManager::ClampRangeSize(VAddr virtual_addr, u64 size) {
-    static constexpr u64 MinSizeToClamp = 3_GB;
+    static constexpr u64 MinSizeToClamp = 1_GB;
     // Dont bother with clamping if the size is small so we dont pay a map lookup on every buffer.
     if (size < MinSizeToClamp) {
         return size;
@@ -349,7 +364,8 @@ s32 MemoryManager::Free(PAddr phys_addr, u64 size, bool is_checked) {
 }
 
 s32 MemoryManager::PoolCommit(VAddr virtual_addr, u64 size, MemoryProt prot, s32 mtype) {
-    std::scoped_lock lk{mutex, unmap_mutex};
+    std::scoped_lock lk{unmap_mutex};
+    std::unique_lock lk2{mutex};
     ASSERT_MSG(IsValidMapping(virtual_addr, size), "Attempted to access invalid address {:#x}",
                virtual_addr);
 
@@ -434,6 +450,7 @@ s32 MemoryManager::PoolCommit(VAddr virtual_addr, u64 size, MemoryProt prot, s32
     // Merge this VMA with similar nearby areas
     MergeAdjacent(vma_map, new_vma_handle);
 
+    lk2.unlock();
     if (IsValidGpuMapping(mapped_addr, size)) {
         rasterizer->MapMemory(mapped_addr, size);
     }
@@ -554,7 +571,7 @@ s32 MemoryManager::MapMemory(void** out_addr, VAddr virtual_addr, u64 size, Memo
     }
 
     // Acquire writer lock.
-    std::scoped_lock lk2{mutex};
+    std::unique_lock lk2{mutex};
 
     // Create VMA representing this mapping.
     auto new_vma_handle = CreateArea(virtual_addr, size, prot, flags, type, name, alignment);
@@ -593,7 +610,10 @@ s32 MemoryManager::MapMemory(void** out_addr, VAddr virtual_addr, u64 size, Memo
             // Tracy memory tracking breaks from merging memory areas. Disabled for now.
             // TRACK_ALLOC(out_addr, size_to_map, "VMEM");
 
+            // Merge this handle with adjacent areas
             handle = MergeAdjacent(fmem_map, new_fmem_handle);
+
+            // Get the next flexible area.
             current_addr += size_to_map;
             remaining_size -= size_to_map;
             flexible_usage += size_to_map;
@@ -602,13 +622,13 @@ s32 MemoryManager::MapMemory(void** out_addr, VAddr virtual_addr, u64 size, Memo
         ASSERT_MSG(remaining_size == 0, "Failed to map physical memory");
     } else if (type == VMAType::Direct) {
         // Map the physical memory for this direct memory mapping.
-        auto phys_addr_to_search = phys_addr;
+        auto current_phys_addr = phys_addr;
         u64 remaining_size = size;
         auto dmem_area = FindDmemArea(phys_addr);
         while (dmem_area != dmem_map.end() && remaining_size > 0) {
             // Carve a new dmem area in place of this one with the appropriate type.
             // Ensure the carved area only covers the current dmem area.
-            const auto start_phys_addr = std::max<PAddr>(phys_addr, dmem_area->second.base);
+            const auto start_phys_addr = std::max<PAddr>(current_phys_addr, dmem_area->second.base);
             const auto offset_in_dma = start_phys_addr - dmem_area->second.base;
             const auto size_in_dma =
                 std::min<u64>(dmem_area->second.size - offset_in_dma, remaining_size);
@@ -617,17 +637,17 @@ s32 MemoryManager::MapMemory(void** out_addr, VAddr virtual_addr, u64 size, Memo
             new_dmem_area.dma_type = PhysicalMemoryType::Mapped;
 
             // Add the dmem area to this vma, merge it with any similar tracked areas.
-            new_vma.phys_areas[phys_addr_to_search - phys_addr] = dmem_handle->second;
-            MergeAdjacent(new_vma.phys_areas,
-                          new_vma.phys_areas.find(phys_addr_to_search - phys_addr));
+            const u64 offset_in_vma = current_phys_addr - phys_addr;
+            new_vma.phys_areas[offset_in_vma] = dmem_handle->second;
+            MergeAdjacent(new_vma.phys_areas, new_vma.phys_areas.find(offset_in_vma));
 
             // Merge the new dmem_area with dmem_map
             MergeAdjacent(dmem_map, dmem_handle);
 
             // Get the next relevant dmem area.
-            phys_addr_to_search = phys_addr + size_in_dma;
+            current_phys_addr += size_in_dma;
             remaining_size -= size_in_dma;
-            dmem_area = FindDmemArea(phys_addr_to_search);
+            dmem_area = FindDmemArea(current_phys_addr);
         }
         ASSERT_MSG(remaining_size == 0, "Failed to map physical memory");
     }
@@ -646,6 +666,8 @@ s32 MemoryManager::MapMemory(void** out_addr, VAddr virtual_addr, u64 size, Memo
             // Tracy memory tracking breaks from merging memory areas. Disabled for now.
             // TRACK_ALLOC(mapped_addr, size, "VMEM");
         }
+
+        lk2.unlock();
 
         // If this is not a reservation, then map to GPU and address space
         if (IsValidGpuMapping(mapped_addr, size)) {
@@ -1216,13 +1238,16 @@ s32 MemoryManager::SetDirectMemoryType(VAddr addr, u64 size, s32 memory_type) {
                 // Increment phys_handle
                 phys_handle++;
             }
-
-            // Check if VMA can be merged with adjacent areas after physical area modifications.
-            vma_handle = MergeAdjacent(vma_map, vma_handle);
         }
         current_addr += size_in_vma;
         remaining_size -= size_in_vma;
-        vma_handle++;
+
+        // Check if VMA can be merged with adjacent areas after modifications.
+        vma_handle = MergeAdjacent(vma_map, vma_handle);
+        if (vma_handle->second.base + vma_handle->second.size <= current_addr) {
+            // If we're now in the next VMA, then go to the next handle.
+            vma_handle++;
+        }
     }
 
     return ORBIS_OK;
@@ -1255,10 +1280,15 @@ void MemoryManager::NameVirtualRange(VAddr virtual_addr, u64 size, std::string_v
                 vma.name = name;
             }
         }
-        it = MergeAdjacent(vma_map, it);
         remaining_size -= size_in_vma;
         current_addr += size_in_vma;
-        it++;
+
+        // Check if VMA can be merged with adjacent areas after modifications.
+        it = MergeAdjacent(vma_map, it);
+        if (it->second.base + it->second.size <= current_addr) {
+            // If we're now in the next VMA, then go to the next handle.
+            it++;
+        }
     }
 }
 

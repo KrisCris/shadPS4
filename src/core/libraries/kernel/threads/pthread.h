@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
+// SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #pragma once
@@ -23,6 +23,12 @@ class SymbolsResolver;
 }
 
 namespace Libraries::Kernel {
+
+constexpr int PthreadInheritSched = 4;
+
+constexpr int ORBIS_KERNEL_PRIO_FIFO_DEFAULT = 700;
+constexpr int ORBIS_KERNEL_PRIO_FIFO_HIGHEST = 256;
+constexpr int ORBIS_KERNEL_PRIO_FIFO_LOWEST = 767;
 
 struct Pthread;
 
@@ -206,8 +212,8 @@ struct PthreadSpecificElem {
 using PthreadKeyDestructor = void PS4_SYSV_ABI (*)(const void*);
 
 struct PthreadKey {
-    int allocated;
-    int seqno;
+    std::atomic<int> allocated;
+    std::atomic<int> seqno;
     PthreadKeyDestructor destructor;
 };
 using PthreadKeyT = s32;
