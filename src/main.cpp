@@ -53,7 +53,9 @@ int main(int argc, char* argv[]) {
     std::optional<std::string> gamePath;
     std::vector<std::string> gameArgs;
     std::optional<std::filesystem::path> overrideRoot;
+    std::optional<std::filesystem::path> cacheDir;
     std::optional<int> waitPid;
+    std::optional<u32> userId;
     bool waitForDebugger = false;
 
     std::optional<std::string> fullscreenStr;
@@ -85,9 +87,12 @@ int main(int argc, char* argv[]) {
     app.add_option("-f,--fullscreen", fullscreenStr, "Fullscreen mode (true|false)");
 
     app.add_option("--override-root", overrideRoot)->check(CLI::ExistingDirectory);
+    app.add_option("--cache-dir", cacheDir, "Use a cache directory for this process")
+        ->check(CLI::ExistingDirectory);
 
     app.add_flag("--wait-for-debugger", waitForDebugger);
     app.add_option("--wait-for-pid", waitPid);
+    app.add_option("--user-id", userId, "Use a local user ID for this process only");
 
     app.add_flag("--show-fps", showFps);
     app.add_flag("--config-clean", configClean);
@@ -149,6 +154,13 @@ int main(int argc, char* argv[]) {
     auto emu_state = std::make_shared<EmulatorState>();
     EmulatorState::SetInstance(emu_state);
     UserSettings.Load();
+    if (userId) {
+        if (!UserManagement.SetDefaultUserForProcess(*userId)) {
+            LOG_ERROR(Debug, "Local user ID {} does not exist", *userId);
+            return 1;
+        }
+        LOG_INFO(Debug, "Using local user ID {} for this process", *userId);
+    }
 
     // Initialize key manager
     auto key_manager = KeyManager::GetInstance();
@@ -218,6 +230,9 @@ int main(int argc, char* argv[]) {
 
     if (configGlobal)
         EmulatorSettings.SetConfigMode(ConfigMode::Global);
+
+    if (cacheDir)
+        Common::FS::SetUserPath(Common::FS::PathType::CacheDir, *cacheDir);
 
     // ---- Resolve game path or ID ----
     std::filesystem::path ebootPath(*gamePath);

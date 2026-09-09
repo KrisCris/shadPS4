@@ -1802,7 +1802,8 @@ struct HostOverrideTarget {
 };
 std::unordered_map<std::string, HostOverrideTarget> ParseHostOverridesJson(
     const std::string& json_text);
-bool ApplyHostOverride(std::string& scheme, std::string& host, u16& port, bool& is_secure);
+bool ApplyHostOverride(std::string& scheme, std::string& host, u16& port, bool& is_secure,
+                       std::string_view path = {});
 } // namespace Libraries::Http
 
 namespace {
@@ -2038,6 +2039,7 @@ TEST(HostOverride, InactivePreservesUnusualPort) {
 // --- ApplyHostOverride: behavior WITH the test JSON file pre-staged ---
 static const char* kTestOverrideJson = R"({
     "api.example.com": "localhost:8080",
+    "http://path.example.com:18671/summon_messenger": "http://summon.local:31315",
     "*": "mock.local:8443"
 })";
 
@@ -2053,6 +2055,23 @@ TEST(HostOverride, ActiveExactHostMatchFromJsonFile) {
     EXPECT_TRUE(changed);
     const bool any_change = (host != "api.example.com") || (port != 443);
     EXPECT_TRUE(any_change);
+}
+
+TEST(HostOverride, ActivePathPrefixMatchFromJsonFile) {
+    if (!HostOverrideJsonConfigured()) {
+        GTEST_SKIP() << "host overrides JSON not configured; on-path test inapplicable";
+    }
+    std::string scheme = "http";
+    std::string host = "path.example.com";
+    u16 port = 18671;
+    bool is_secure = false;
+    const bool changed =
+        ApplyHostOverride(scheme, host, port, is_secure, "/summon_messenger/create");
+    EXPECT_TRUE(changed);
+    EXPECT_EQ(scheme, "http");
+    EXPECT_EQ(host, "summon.local");
+    EXPECT_EQ(port, 31315);
+    EXPECT_FALSE(is_secure);
 }
 
 } // namespace

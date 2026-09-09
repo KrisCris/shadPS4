@@ -276,6 +276,7 @@ set(HTTP_TEST_SOURCES
     stubs/signals_stub.cpp
     stubs/file_sys_stub.cpp
     stubs/kernel_stub.cpp
+    stubs/bloodborne_http_stub.cpp
 
     # Tests
     network/test_http_uri.cpp

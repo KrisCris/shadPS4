@@ -232,8 +232,11 @@ void HandleMatching2HandshakePacket(u32 from_addr, u16 from_port,
 
     PeerInfo& peer = ctx->peers[member_id];
     peer.member_id = member_id;
-    peer.addr = pkt.mapped_addr != 0 ? pkt.mapped_addr : from_addr;
-    peer.port = pkt.mapped_port != 0 ? pkt.mapped_port : from_port;
+    // The UDP source endpoint is what this peer's NAT actually exposed to us.
+    // Prefer it over the self-reported mapping, because a NAT can translate
+    // the sender's local UDP port.
+    peer.addr = from_addr != 0 ? from_addr : pkt.mapped_addr;
+    peer.port = from_port != 0 ? from_port : pkt.mapped_port;
     peer.status =
         peer.status == kMatching2ConnActive ? kMatching2ConnActive : kMatching2ConnPending;
     peer.handshake_started = true;

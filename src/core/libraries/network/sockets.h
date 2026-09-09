@@ -5,11 +5,13 @@
 
 #ifdef _WIN32
 #define _WINSOCK_DEPRECATED_NO_WARNINGS
-#include <Ws2tcpip.h>
+// clang-format off
+#include <winsock2.h>
+#include <ws2tcpip.h>
 #include <afunix.h>
 #include <iphlpapi.h>
 #include <mstcpip.h>
-#include <winsock2.h>
+// clang-format on
 typedef SOCKET net_socket;
 typedef int socklen_t;
 #ifndef LPFN_WSASENDMSG
@@ -42,9 +44,12 @@ static const GUID WSAID_WSARECVMSG = {
 #include <unistd.h>
 typedef int net_socket;
 #endif
+#include <condition_variable>
+#include <deque>
 #include <map>
 #include <memory>
 #include <mutex>
+#include <vector>
 #include "net.h"
 
 namespace Libraries::Kernel {
@@ -125,10 +130,18 @@ struct PosixSocket : public Socket {
     }
 };
 
+struct P2PDatagram {
+    u32 source_addr{};
+    u16 source_port{};
+    u16 source_vport{};
+    std::vector<u8> payload;
+};
+
 struct P2PSocket : public Socket {
-    explicit P2PSocket(int domain, int type, int protocol) : Socket(domain, type, protocol) {}
+    explicit P2PSocket(int domain, int type, int protocol);
+    ~P2PSocket() override;
     bool IsValid() const override {
-        return true;
+        return valid;
     }
     int Close() override;
     int SetSocketOptions(int level, int optname, const void* optval, u32 optlen) override;
@@ -146,8 +159,44 @@ struct P2PSocket : public Socket {
     int GetPeerName(OrbisNetSockaddr* addr, u32* namelen) override;
     int fstat(Libraries::Kernel::OrbisKernelStat* stat) override;
     std::optional<net_socket> Native() override {
+#ifdef _WIN32
+        if (readiness_fd != INVALID_SOCKET) {
+            return readiness_fd;
+        }
+#elif defined(__linux__)
+        if (readiness_fd >= 0) {
+            return readiness_fd;
+        }
+#endif
         return {};
     }
+
+    // Called by the shared UDP transport after it demultiplexes a virtual port.
+    void EnqueuePacket(P2PDatagram packet);
+
+private:
+    bool valid{true};
+    bool bound{false};
+    bool connected{false};
+    OrbisNetSockaddrIn local_addr{};
+    OrbisNetSockaddrIn peer_addr{};
+
+    int sockopt_so_nbio{0};
+    int sockopt_so_usecrypto{0};
+    int sockopt_so_usesignature{0};
+    std::map<int, int> integer_socket_options;
+
+    std::condition_variable receive_cv;
+    std::deque<P2PDatagram> receive_queue;
+
+#ifdef _WIN32
+    // wepoll requires a Winsock handle. A private loopback pair carries readiness bytes only.
+    net_socket readiness_fd{INVALID_SOCKET};
+    net_socket readiness_signal_fd{INVALID_SOCKET};
+#elif defined(__linux__)
+    // eventfd carries readiness only; network data stays on the shared UDP transport.
+    int readiness_fd{-1};
+#endif
 };
 
 struct UnixSocket : public Socket {
