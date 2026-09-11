@@ -37,8 +37,7 @@ enum class MmCommand : u16 {
     SendRoomMessage = 115,
 };
 
-void SetMmShadNetClient(std::shared_ptr<ShadNet::ShadNetClient> client,
-                        std::string_view server_host, u16 tcp_port);
+void SetMmShadNetClient(std::shared_ptr<ShadNet::ShadNetClient> client);
 void ClearMmShadNetClient();
 bool IsMmClientRunning();
 
@@ -86,8 +85,6 @@ s32 MmSetRoomDataExternal(OrbisNpMatching2ContextId ctx_id, OrbisNpMatching2Requ
 s32 MmKickoutRoomMember(OrbisNpMatching2ContextId ctx_id, OrbisNpMatching2RequestId req_id,
                         const OrbisNpMatching2KickoutRoomMemberRequest& request);
 
-u32 GetMmServerAddr();
-u16 GetMmServerUdpPort();
 
 // The peer's virtual address, opening a peer session if there is not one
 // yet. False means "not yet" as well as "no": setting a session up takes a

@@ -41,8 +41,6 @@ struct PendingRequest {
 struct MmClientState {
     std::shared_ptr<ShadNet::ShadNetClient> client;
     std::mutex mutex;
-    u32 server_addr = 0;
-    u16 server_udp_port = 0;
     bool matching2_enabled = false;
 
     std::mutex pending_mutex;
@@ -658,24 +656,13 @@ void OnMatchingReply(ShadNet::CommandType cmd, u64 pkt_id, ShadNet::ErrorType er
     DispatchRequestComplete(pr, error, body);
 }
 
-void SetMmShadNetClient(std::shared_ptr<ShadNet::ShadNetClient> client,
-                        std::string_view server_host, u16 tcp_port) {
-    u32 server_addr = 0;
-    u16 server_udp_port = 0;
+void SetMmShadNetClient(std::shared_ptr<ShadNet::ShadNetClient> client) {
     bool matching2_enabled = false;
     {
         std::lock_guard lock(g_mm.mutex);
         g_mm.client = client;
         g_mm.matching2_enabled = client ? client->IsMatching2Enabled() : false;
         matching2_enabled = g_mm.matching2_enabled;
-        g_mm.server_addr = client ? client->GetAddrServer() : 0;
-        if (g_mm.server_addr == 0) {
-            g_mm.server_addr = IpStringToAddr(server_host);
-        }
-        g_mm.server_udp_port =
-            matching2_enabled ? Libraries::Net::sceNetHtons(static_cast<u16>(tcp_port + 1)) : 0;
-        server_addr = g_mm.server_addr;
-        server_udp_port = g_mm.server_udp_port;
     }
     LOG_INFO(Lib_NpMatching2, "ShadNet features: matching2_enabled={}", matching2_enabled);
     Net::UPnPClient::Instance().SetP2PFeaturesEnabled(matching2_enabled);
@@ -684,7 +671,6 @@ void SetMmShadNetClient(std::shared_ptr<ShadNet::ShadNetClient> client,
         NpSignaling::Stubs::SetTransportHooks({});
         NpSignaling::Stubs::SetPeerResolver(nullptr);
         NpSignaling::Stubs::SetMatching2Enabled(false);
-        NpSignaling::Stubs::SetMmServerEndpoint(0, 0);
         StopMatching2HandshakeThread();
         return;
     }
@@ -701,7 +687,6 @@ void SetMmShadNetClient(std::shared_ptr<ShadNet::ShadNetClient> client,
     });
     NpSignaling::Stubs::SetPeerResolver(matching2_enabled ? ResolvePeerAddress : nullptr);
     NpSignaling::Stubs::SetMatching2Enabled(matching2_enabled);
-    NpSignaling::Stubs::SetMmServerEndpoint(server_addr, server_udp_port);
     if (matching2_enabled) {
         StartMatching2HandshakeThread();
     } else {
@@ -726,8 +711,6 @@ void ClearMmShadNetClient() {
     {
         std::lock_guard lock(g_mm.mutex);
         old_client = std::move(g_mm.client);
-        g_mm.server_addr = 0;
-        g_mm.server_udp_port = 0;
         g_mm.matching2_enabled = false;
     }
     Net::UPnPClient::Instance().SetP2PFeaturesEnabled(false);
@@ -739,7 +722,6 @@ void ClearMmShadNetClient() {
     NpSignaling::Stubs::SetTransportHooks({});
     NpSignaling::Stubs::SetPeerResolver(nullptr);
     NpSignaling::Stubs::SetMatching2Enabled(false);
-    NpSignaling::Stubs::SetMmServerEndpoint(0, 0);
     StopMatching2HandshakeThread();
     {
         std::lock_guard lock(g_mm.pending_mutex);
@@ -759,7 +741,6 @@ void MmContextStart(OrbisNpMatching2ContextId ctx_id) {
     MmSubmitRequest(ctx_id, 0, ORBIS_NP_MATCHING2_CONTEXT_EVENT_STARTED, MmCommand::ContextStart,
                     MakeProtoPayload(req));
     if (ContextObject* ctx = ContextManager::Instance().Get(ctx_id)) {
-        SendMatching2StunPing(*ctx);
     }
 }
 
@@ -1189,15 +1170,6 @@ s32 MmKickoutRoomMember(OrbisNpMatching2ContextId ctx_id, OrbisNpMatching2Reques
                            MmCommand::KickoutRoomMember, MakeProtoPayload(req));
 }
 
-u32 GetMmServerAddr() {
-    std::lock_guard lock(g_mm.mutex);
-    return g_mm.server_addr;
-}
-
-u16 GetMmServerUdpPort() {
-    std::lock_guard lock(g_mm.mutex);
-    return g_mm.server_udp_port;
-}
 
 bool ResolvePeerAddress(std::string_view target_online_id, u32* out_addr, u16* out_port) {
     if (!out_addr || !out_port) {

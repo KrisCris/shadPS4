@@ -286,7 +286,7 @@ bool NpHandler::ConnectUser(s32 user_id, const std::string& host, u16 port, cons
         Net::UPnPClient::Instance().Start();
     }
 
-    NpMatching2::SetMmShadNetClient(client, host, port);
+    NpMatching2::SetMmShadNetClient(client);
 
     // Build OrbisNpId
     {

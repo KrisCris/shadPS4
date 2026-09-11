@@ -179,9 +179,6 @@ s32 PS4_SYSV_ABI sceNpSignalingCreateContext(const void* npId, void* callback, v
                  fmt::ptr(callbackArg), ctx.compiled_sdk_version, ctx.bound_port);
     }
 
-    if (transport_ready) {
-        SendStunPing(ctx_id);
-    }
     return ORBIS_OK;
 }
 
@@ -238,9 +235,6 @@ s32 PS4_SYSV_ABI sceNpSignalingCreateContextA(s32 userId, void* callback, void* 
                  OnlineIdToString(ctx.owner_online_id), account_id);
     }
 
-    if (transport_ready) {
-        SendStunPing(ctx_id);
-    }
     return ORBIS_OK;
 }
 

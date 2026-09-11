@@ -208,25 +208,6 @@ static bool g_receive_stop = false;
 static Kernel::PthreadT g_ping_thread{};
 static bool g_ping_stop = false;
 
-static void HandleStunEcho(s32 ctx_id, const StunEcho& echo) {
-    SignalingMutexGuard lock;
-    const auto it = g_contexts.find(ctx_id);
-    if (it == g_contexts.end() || !it->second.active) {
-        return;
-    }
-    NpSignalingContext& ctx = it->second;
-    ctx.ext_addr.store(echo.ext_ip);
-    ctx.ext_port.store(echo.ext_port);
-
-    LOG_DEBUG(Lib_NpSignaling, "STUN echo: ctxId={} ext_addr={:#x} ext_port={}", ctx_id,
-              echo.ext_ip, sceNetNtohs(echo.ext_port));
-
-    auto* netinfo = Common::Singleton<NetUtil::NetUtilInternal>::Instance();
-    netinfo->SetExternalIp(echo.ext_ip);
-
-    ctx.stun_cv.notify_all();
-}
-
 static bool HasSignalingMagic(const u8* buf, size_t nbytes) {
     return nbytes >= 5 && std::memcmp(buf, kSignalingMagic, sizeof(kSignalingMagic)) == 0;
 }
@@ -271,33 +252,10 @@ static void ReceiveThreadMain() {
 
         const auto nbytes = static_cast<size_t>(rc);
 
-        if (nbytes != sizeof(StunEcho)) {
-            LOG_DEBUG(
-                Lib_NpSignaling,
-                "ReceiveThread DATA from {:#x}:{} size={} b0-4={:02x},{:02x},{:02x},{:02x},{:02x}",
-                from_addr, sceNetNtohs(from_port), nbytes, buf[0], buf[1], buf[2], buf[3],
-                nbytes >= 5 ? buf[4] : 0);
-        }
-
-        if (nbytes == sizeof(StunEcho)) {
-            s32 ctx_id = 0;
-            {
-                SignalingMutexGuard lock;
-                for (const auto& [cid, ctx] : g_contexts) {
-                    if (ctx.active) {
-                        ctx_id = cid;
-                        break;
-                    }
-                }
-            }
-            if (ctx_id == 0) {
-                continue;
-            }
-            StunEcho echo{};
-            std::memcpy(&echo, buf, sizeof(echo));
-            HandleStunEcho(ctx_id, echo);
-            continue;
-        }
+        LOG_DEBUG(Lib_NpSignaling,
+                  "ReceiveThread DATA from {:#x}:{} size={} b0-4={:02x},{:02x},{:02x},{:02x},{:02x}",
+                  from_addr, sceNetNtohs(from_port), nbytes, buf[0], buf[1], buf[2], buf[3],
+                  nbytes >= 5 ? buf[4] : 0);
 
         if (!HasSignalingMagic(buf, nbytes)) {
             LOG_WARNING(Lib_NpSignaling, "ReceiveThread: dropping non-SHAD packet (size={})",
@@ -378,41 +336,22 @@ static void PingThreadMain() {
         struct CtxSnapshot {
             s32 ctx_id;
             OrbisNpOnlineId online_id{};
-            bool resolved;
         };
         std::vector<CtxSnapshot> contexts;
         {
             SignalingMutexGuard lock;
             for (const auto& [ctx_id, ctx] : g_contexts) {
                 if (ctx.active) {
-                    contexts.push_back({ctx_id, ctx.owner_online_id, ctx.ext_addr.load() != 0});
+                    contexts.push_back({ctx_id, ctx.owner_online_id});
                 }
-            }
-        }
-
-        if (Stubs::Matching2Enabled()) {
-            const u32 server_addr = Stubs::MmServerAddr();
-            const u16 server_port = Stubs::MmServerUdpPort();
-
-            for (const auto& cs : contexts) {
-                if (server_addr == 0 || server_port == 0) {
-                    break;
-                }
-                StunPing ping{};
-                ping.cmd = 0x01;
-                std::memcpy(ping.online_id, cs.online_id.data, ORBIS_NP_ONLINEID_MAX_LENGTH);
-                ping.local_ip = Stubs::AdvertisedAddr();
-
-                Stubs::SignalingSendTo(&ping, sizeof(ping), server_addr, server_port);
             }
         }
 
         SendEchoPings();
 
-        const bool any_unresolved = std::any_of(contexts.begin(), contexts.end(),
-                                                [](const auto& cs) { return !cs.resolved; });
-        const u32 sleep_ms = any_unresolved ? kSigRetryMs : kSigPingMs;
-        std::this_thread::sleep_for(std::chrono::milliseconds(sleep_ms));
+        // A steady interval now. The faster retry existed to chase a STUN
+        // echo that had not come back; there is no such wait any more.
+        std::this_thread::sleep_for(std::chrono::milliseconds(kSigPingMs));
     }
 }
 

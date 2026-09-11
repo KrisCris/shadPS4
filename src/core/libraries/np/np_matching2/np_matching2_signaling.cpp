@@ -30,7 +30,6 @@ constexpr s32 kMatching2ConnPending = 1;
 constexpr s32 kMatching2ConnActive = 2;
 constexpr auto kMatching2HandshakeRetry = std::chrono::milliseconds(350);
 constexpr auto kMatching2HandshakeTimeout = std::chrono::seconds(10);
-constexpr auto kMatching2StunPingInterval = std::chrono::seconds(5);
 
 std::atomic<bool> g_matching2_stop{false};
 std::mutex g_matching2_thread_mutex;
@@ -60,14 +59,6 @@ struct Matching2HandshakePacket {
 #pragma pack(pop)
 static_assert(sizeof(Matching2HandshakePacket) == 0x32);
 
-#pragma pack(push, 1)
-struct Matching2StunPing {
-    u8 cmd = 0x01;
-    u8 online_id[ORBIS_NP_ONLINEID_MAX_LENGTH]{};
-    u32 local_ip = 0;
-};
-#pragma pack(pop)
-static_assert(sizeof(Matching2StunPing) == 21);
 
 bool HasMatching2Magic(const Matching2HandshakePacket& pkt) {
     return pkt.magic[0] == 'S' && pkt.magic[1] == 'H' && pkt.magic[2] == 'A' &&
@@ -277,7 +268,6 @@ void HandleMatching2HandshakePacket(u32 from_addr, u16 from_port,
 }
 
 void Matching2HandshakeThreadMain() {
-    auto last_stun_ping = std::chrono::steady_clock::time_point{};
     while (!g_matching2_stop.load(std::memory_order_relaxed)) {
         Matching2HandshakePacket pkt{};
         u32 from_addr = 0;
@@ -288,16 +278,11 @@ void Matching2HandshakeThreadMain() {
         }
 
         const auto now = std::chrono::steady_clock::now();
-        const bool should_stun_ping = last_stun_ping.time_since_epoch().count() == 0 ||
-                                      now - last_stun_ping >= kMatching2StunPingInterval;
         for (u32 id = 1; id <= ContextManager::kMaxContexts; ++id) {
             ContextObject* ctx =
                 ContextManager::Instance().Get(static_cast<OrbisNpMatching2ContextId>(id));
             if (!ctx) {
                 continue;
-            }
-            if (should_stun_ping) {
-                SendMatching2StunPing(*ctx);
             }
             if (ctx->room_id == 0) {
                 continue;
@@ -327,46 +312,11 @@ void Matching2HandshakeThreadMain() {
                 }
             }
         }
-        if (should_stun_ping) {
-            last_stun_ping = now;
-        }
-
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
 }
 
 } // namespace
-
-bool SendMatching2StunPing(const ContextObject& ctx) {
-    if (!NpSignaling::Stubs::Matching2Enabled()) {
-        return false;
-    }
-    if (!ctx.started || ctx.online_id.data[0] == '\0') {
-        return false;
-    }
-    if (!NpSignaling::Stubs::EnsureTransport()) {
-        return false;
-    }
-
-    const u32 server_addr = NpSignaling::Stubs::MmServerAddr();
-    const u16 server_udp = NpSignaling::Stubs::MmServerUdpPort();
-    if (server_addr == 0 || server_udp == 0) {
-        return false;
-    }
-
-    Matching2StunPing ping{};
-    ping.cmd = 0x01;
-    std::memcpy(ping.online_id, ctx.online_id.data, ORBIS_NP_ONLINEID_MAX_LENGTH);
-    ping.local_ip = NpSignaling::Stubs::AdvertisedAddr();
-
-    const int rc =
-        NpSignaling::Stubs::SignalingSendTo(&ping, sizeof(ping), server_addr, server_udp);
-    LOG_DEBUG(Lib_NpMatching2,
-              "Matching2 STUN ping: ctx={} online_id='{}' server={:#x}:{} local_ip={:#x} rc={}",
-              ctx.ctx_id, OnlineIdToString(ctx.online_id), server_addr,
-              Libraries::Net::sceNetNtohs(server_udp), ping.local_ip, rc);
-    return rc >= 0;
-}
 
 void QueueMatching2SignalingEvent(ContextObject& ctx, OrbisNpMatching2RoomId room_id,
                                   OrbisNpMatching2RoomMemberId member_id,

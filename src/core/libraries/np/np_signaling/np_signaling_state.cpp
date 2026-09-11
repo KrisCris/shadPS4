@@ -1302,46 +1302,6 @@ void HandleControlPacket(u32 from_addr, u16 from_port, const SignalingControl& p
     }
 }
 
-void SendStunPing(s32 ctx_id) {
-    if (!Stubs::Matching2Enabled()) {
-        return;
-    }
-
-    OrbisNpOnlineId online_id{};
-
-    {
-        SignalingMutexGuard lock;
-        const auto it = g_contexts.find(ctx_id);
-        if (it == g_contexts.end() || !it->second.active) {
-            return;
-        }
-        online_id = it->second.owner_online_id;
-    }
-
-    if (!Stubs::EnsureTransport()) {
-        return;
-    }
-
-    const u32 server_addr = Stubs::MmServerAddr();
-    const u16 server_udp = Stubs::MmServerUdpPort();
-
-    if (server_addr == 0 || server_udp == 0) {
-        LOG_WARNING(Lib_NpSignaling, "ctxId={} skipped (server_addr={:#x} udp_port={})", ctx_id,
-                    server_addr, sceNetNtohs(server_udp));
-        return;
-    }
-
-    StunPing ping{};
-    ping.cmd = 0x01;
-    std::memcpy(ping.online_id, online_id.data, ORBIS_NP_ONLINEID_MAX_LENGTH);
-    ping.local_ip = Stubs::AdvertisedAddr();
-
-    LOG_DEBUG(Lib_NpSignaling, "ctxId={} online_id='{}' server={:#x}:{} local_ip={:#x}", ctx_id,
-              OnlineIdToString(online_id), server_addr, sceNetNtohs(server_udp), ping.local_ip);
-
-    Stubs::SignalingSendTo(&ping, sizeof(ping), server_addr, server_udp);
-}
-
 s32 GetActiveConnectionIdForPeer(std::string_view online_id) {
     SignalingMutexGuard lock;
     for (const auto& [conn_id, ci] : g_connections) {

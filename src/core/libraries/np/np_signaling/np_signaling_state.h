@@ -29,23 +29,6 @@ constexpr s64 kActivateBudgetMaxUs = 600'000'000;
 constexpr u32 kSigRetryMs = 500;
 constexpr u32 kSigPingMs = 5'000;
 
-#pragma pack(push, 1)
-struct StunPing {
-    u8 cmd = 0x01;
-    u8 online_id[16]{};
-    u32 local_ip = 0;
-};
-static_assert(sizeof(StunPing) == 21, "StunPing must be exactly 21 bytes");
-#pragma pack(pop)
-
-#pragma pack(push, 1)
-struct StunEcho {
-    u32 ext_ip = 0;
-    u16 ext_port = 0;
-};
-static_assert(sizeof(StunEcho) == 6, "StunEcho must be exactly 6 bytes");
-#pragma pack(pop)
-
 inline constexpr u8 kSignalingMagic[4] = {'S', 'H', 'A', 'D'};
 
 enum class SignalingPacketType : u8 {
@@ -196,11 +179,6 @@ struct NpSignalingContext {
 
     u16 bound_port{0};
 
-    std::atomic<u32> ext_addr{0};
-    std::atomic<u16> ext_port{0};
-    std::mutex stun_mutex{};
-    std::condition_variable stun_cv{};
-
     s64 activate_budget_us{0};
     s64 activate_last_update_us{0};
 };
@@ -349,7 +327,6 @@ void HandleControlPacket(u32 from_addr, u16 from_port, const SignalingControl& p
 
 const char* SignalingEventName(u32 event_type);
 bool ConsumeActivationBudgetLocked(NpSignalingContext& ctx);
-void SendStunPing(OrbisNpSignalingContextId ctx_id);
 void ClearActiveDeadlines();
 void ClearConnectionDeadlineForPeer(std::string_view npid);
 void SetRoomLeft();

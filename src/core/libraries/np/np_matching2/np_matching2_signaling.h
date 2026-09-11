@@ -13,7 +13,6 @@ struct ContextObject;
 void StartMatching2HandshakeThread();
 void StopMatching2HandshakeThread();
 
-bool SendMatching2StunPing(const ContextObject& ctx);
 
 void StartMatching2PeerHandshake(ContextObject& ctx, OrbisNpMatching2RoomId room_id,
                                  OrbisNpMatching2RoomMemberId member_id);
