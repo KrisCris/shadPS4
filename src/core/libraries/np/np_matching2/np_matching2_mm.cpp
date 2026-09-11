@@ -194,6 +194,12 @@ void DispatchRequestComplete(const PendingRequest& pr, ShadNet::ErrorType error,
             if (reply.ParseFromString(proto) && reply.has_details()) {
                 request_data = pr.a_variant ? BuildCreateJoinRoomPayloadA(*ctx, reply.details())
                                             : BuildCreateJoinRoomPayload(*ctx, reply.details());
+                // The third of the three summon states, under the same tag as
+                // the other two so one grep shows how far a summon actually
+                // got. A claim that was written and read but never reaches
+                // here did not summon anybody.
+                LOG_INFO(Lib_NpMatching2, "SUMMON LIFECYCLE room-joined=YES room_id={}",
+                         reply.room_id());
             }
         } else if (pr.req_event == ORBIS_NP_MATCHING2_REQUEST_EVENT_LEAVE_ROOM) {
             shadnet::LeaveRoomReply reply;

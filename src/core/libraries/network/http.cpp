@@ -137,6 +137,16 @@ struct HttpRequest {
     int epoll_id = 0;
     void* epoll_user_arg = nullptr;
     std::vector<std::pair<std::string, std::string>> headers;
+
+    // Bloodborne summon lifecycle accounting. Writing a response, the game
+    // reading it, and the game acting on it are three different events, and
+    // conflating the first with the last is what made the earlier long-poll
+    // work look finished when it was not. Producing a claim proves nothing.
+    bool is_summon_path = false;
+    bool summon_is_create = false;
+    bool response_written = false;
+    bool response_read = false;
+    std::chrono::steady_clock::time_point dispatched_at{};
 };
 
 struct HttpState {
@@ -1961,6 +1971,11 @@ int PS4_SYSV_ABI sceHttpSendRequest(int reqId, const void* postData, u64 size) {
     ApplyBloodborneSeamlessRoute(plan);
 
     const bool online = EmulatorSettings.IsConnectedToNetwork();
+    req_ptr->is_summon_path = IsBloodborneSummonPath(plan.path);
+    req_ptr->summon_is_create = IsBloodborneSummonCreatePath(plan.path);
+    req_ptr->response_written = false;
+    req_ptr->response_read = false;
+    req_ptr->dispatched_at = std::chrono::steady_clock::now();
     LOG_INFO(Lib_Http, "reqId={} dispatched to async worker [{} {} {}://{}:{}{}]", reqId,
              online ? "ONLINE" : "OFFLINE", HttpMethodName(plan.method), plan.scheme, plan.host,
              plan.port, plan.path);
@@ -1996,10 +2011,24 @@ int PS4_SYSV_ABI sceHttpSendRequest(int reqId, const void* postData, u64 size) {
             const char* reason = g_state.shutting_down.load() ? "shutdown"
                                  : req_ptr->deleted           ? "deleted"
                                                               : "aborted";
+            const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                        std::chrono::steady_clock::now() - req_ptr->dispatched_at)
+                                        .count();
             LOG_INFO(Lib_Http,
                      "reqId={} worker finished but request was {} before completion; "
-                     "dropping result (would have been status={}, errno={:#x})",
-                     reqId, reason, local_res.status_code, static_cast<u32>(worker_errno));
+                     "dropping result (would have been status={}, {} bytes, errno={:#x}) "
+                     "after {}ms",
+                     reqId, reason, local_res.status_code, local_res.body.size(),
+                     static_cast<u32>(worker_errno), elapsed_ms);
+            if (req_ptr->is_summon_path && worker_errno == 0) {
+                // The distinction that matters: the game gave up before the
+                // server answered. Which of the two was late is the whole
+                // question, so log the interval rather than just the fact.
+                LOG_WARNING(Lib_Http,
+                            "SUMMON LIFECYCLE reqId={} response-written=NO (dropped, {} after "
+                            "{}ms) response-read=NO",
+                            reqId, reason, elapsed_ms);
+            }
             req_ptr->cv.notify_all();
             return;
         }
@@ -2007,8 +2036,17 @@ int PS4_SYSV_ABI sceHttpSendRequest(int reqId, const void* postData, u64 size) {
         req_ptr->state = HttpRequestState::Sent;
         req_ptr->last_errno = worker_errno;
         if (worker_errno == 0) {
-            LOG_INFO(Lib_Http, "(SUCCESS) reqId={} status={} body={} bytes", reqId,
-                     req_ptr->res.status_code, req_ptr->res.body.size());
+            req_ptr->response_written = true;
+            const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                        std::chrono::steady_clock::now() - req_ptr->dispatched_at)
+                                        .count();
+            LOG_INFO(Lib_Http, "(SUCCESS) reqId={} status={} body={} bytes after {}ms", reqId,
+                     req_ptr->res.status_code, req_ptr->res.body.size(), elapsed_ms);
+            if (req_ptr->is_summon_path) {
+                LOG_INFO(Lib_Http,
+                         "SUMMON LIFECYCLE reqId={} response-written=YES ({} bytes after {}ms)",
+                         reqId, req_ptr->res.body.size(), elapsed_ms);
+            }
         } else {
             LOG_INFO(Lib_Http, "(TRANSPORT FAIL) reqId={} -> {} (body {} bytes, errno={:#x})",
                      reqId, req_ptr->res.status_code, req_ptr->res.body.size(),
@@ -2726,6 +2764,11 @@ int PS4_SYSV_ABI sceHttpReadData(s32 reqId, void* data, u64 size) {
     }
     LOG_INFO(Lib_Http, "reqId={} copied {} bytes (cursor {}/{}) ", reqId, to_copy,
              req.res.read_cursor, req.res.body.size());
+    if (req.is_summon_path && to_copy > 0 && !req.response_read) {
+        req.response_read = true;
+        LOG_INFO(Lib_Http, "SUMMON LIFECYCLE reqId={} response-read=YES (first {} of {} bytes)",
+                 reqId, to_copy, req.res.body.size());
+    }
     return static_cast<int>(to_copy);
 }
 
@@ -3296,6 +3339,16 @@ int PS4_SYSV_ABI sceHttpDeleteRequest(int reqId) {
                  "reqId={} abandoned before sceHttpSendRequest (state=Created); "
                  "{} headers, content_length={} were prepared but never transmitted",
                  reqId, req_ptr->headers.size(), req_ptr->content_length);
+    }
+    if (req_ptr->is_summon_path && req_ptr->response_written && !req_ptr->response_read) {
+        // A response the game was given and never looked at. Indistinguishable
+        // from a successful summon in the old logs, and the two mean opposite
+        // things: this one says the claim reached the emulator and stopped
+        // there.
+        LOG_WARNING(Lib_Http,
+                    "SUMMON LIFECYCLE reqId={} deleted with an unread {}-byte response "
+                    "(response-written=YES response-read=NO)",
+                    reqId, req_ptr->res.body.size());
     }
     req_ptr->deleted = true;
     req_ptr->state = HttpRequestState::Aborted;
