@@ -1503,4 +1503,20 @@ if (SHADPS4_BUILD_NET_TESTS)
     if (WIN32)
         target_link_libraries(peer_connection_test PRIVATE ws2_32)
     endif()
+
+    # One peer of the pair, as its own process, so the two can be placed in
+    # separate network namespaces with a real NAT between them. Same link set
+    # and same logging stub as peer_connection_test, for the same reasons.
+    add_executable(peer_netns_agent
+        src/shadnet/tests/peer_netns_agent.cpp
+        src/shadnet/peer_connection.cpp
+    )
+    target_include_directories(peer_netns_agent PRIVATE "${SHADNET_PROTO_OUT}")
+    target_link_libraries(peer_netns_agent PRIVATE
+        LibJuice::LibJuiceStatic spdlog::spdlog fmt::fmt magic_enum::magic_enum
+        nlohmann_json::nlohmann_json toml11::toml11)
+    target_compile_features(peer_netns_agent PRIVATE cxx_std_20)
+    if (WIN32)
+        target_link_libraries(peer_netns_agent PRIVATE ws2_32)
+    endif()
 endif()

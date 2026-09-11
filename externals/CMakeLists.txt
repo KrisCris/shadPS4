@@ -268,7 +268,7 @@ endif()
 
 add_subdirectory(aacdec)
 
-#nlohmann json 
+#nlohmann json
 if (NOT TARGET nlohmann_json::nlohmann_json)
 set(JSON_BuildTests OFF CACHE INTERNAL "")
 add_subdirectory(json)

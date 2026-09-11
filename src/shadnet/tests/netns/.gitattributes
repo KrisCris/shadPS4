@@ -1,0 +1,7 @@
+# These run inside a Linux container, including from a Windows working tree
+# bind-mounted into it. With core.autocrlf on -- which is the default this
+# repo is cloned with on Windows -- they would be checked out with CRLF and
+# the shebang would become "#!/bin/bash\r", which Linux reports as a missing
+# interpreter. Pin them to LF wherever they are checked out.
+*.sh text eol=lf
+Dockerfile text eol=lf
