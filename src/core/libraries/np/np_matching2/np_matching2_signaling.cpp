@@ -59,7 +59,6 @@ struct Matching2HandshakePacket {
 #pragma pack(pop)
 static_assert(sizeof(Matching2HandshakePacket) == 0x32);
 
-
 bool HasMatching2Magic(const Matching2HandshakePacket& pkt) {
     return pkt.magic[0] == 'S' && pkt.magic[1] == 'H' && pkt.magic[2] == 'A' &&
            pkt.magic[3] == 'D' && pkt.type == 0x21;

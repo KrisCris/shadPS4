@@ -495,8 +495,8 @@ u64 ShadNetClient::SubmitRequest(CommandType cmd, const std::vector<u8>& payload
     return pkt_id;
 }
 
-u64 ShadNetClient::PeerSessionBegin(const std::string& target_npid,
-                                   const std::string& title_id, u32 attempt) {
+u64 ShadNetClient::PeerSessionBegin(const std::string& target_npid, const std::string& title_id,
+                                    u32 attempt) {
     shadnet::PeerSessionBeginRequest req;
     req.set_target_npid(target_npid);
     req.set_title_id(title_id);

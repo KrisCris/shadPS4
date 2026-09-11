@@ -42,8 +42,8 @@ int main() {
     const u32 addr_c = Nbo(0xC612012Au); // 198.18.1.42
 
     // Range membership, including both edges and the address just past the end.
-    CHECK(PeerAddressTable::IsVirtual(Nbo(0xC6120000u)));  // 198.18.0.0
-    CHECK(PeerAddressTable::IsVirtual(Nbo(0xC613FFFFu)));  // 198.19.255.255
+    CHECK(PeerAddressTable::IsVirtual(Nbo(0xC6120000u))); // 198.18.0.0
+    CHECK(PeerAddressTable::IsVirtual(Nbo(0xC613FFFFu))); // 198.19.255.255
     CHECK(PeerAddressTable::IsVirtual(addr_a));
     CHECK(!PeerAddressTable::IsVirtual(Nbo(0xC611FFFFu))); // 198.17.255.255
     CHECK(!PeerAddressTable::IsVirtual(Nbo(0xC6140000u))); // 198.20.0.0

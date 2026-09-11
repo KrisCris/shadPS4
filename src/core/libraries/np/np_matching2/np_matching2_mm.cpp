@@ -637,10 +637,8 @@ void OnMatchingReply(ShadNet::CommandType cmd, u64 pkt_id, ShadNet::ErrorType er
     // Peer connectivity replies (120-123) belong to the transport. The
     // session a player opens arrives here, in the reply; the other player
     // learns of the same session from a notification instead.
-    if (cmd == ShadNet::CommandType::PeerSessionBegin ||
-        cmd == ShadNet::CommandType::PeerSignal ||
-        cmd == ShadNet::CommandType::PeerSessionEnd ||
-        cmd == ShadNet::CommandType::GetIceServers) {
+    if (cmd == ShadNet::CommandType::PeerSessionBegin || cmd == ShadNet::CommandType::PeerSignal ||
+        cmd == ShadNet::CommandType::PeerSessionEnd || cmd == ShadNet::CommandType::GetIceServers) {
         ShadNet::PeerTransport::Instance().OnReply(cmd, pkt_id, error, body);
         return;
     }
@@ -705,8 +703,8 @@ void SetMmShadNetClient(std::shared_ptr<ShadNet::ShadNetClient> client) {
         // The title id is part of the server's pairing key, so both players
         // must send the same one or they open two sessions instead of joining
         // one.
-        ShadNet::PeerTransport::Instance().Attach(client,
-                                                  std::string(Common::ElfInfo::Instance().GameSerial()));
+        ShadNet::PeerTransport::Instance().Attach(
+            client, std::string(Common::ElfInfo::Instance().GameSerial()));
     } else {
         ShadNet::PeerTransport::Instance().Detach();
     }
@@ -1175,7 +1173,6 @@ s32 MmKickoutRoomMember(OrbisNpMatching2ContextId ctx_id, OrbisNpMatching2Reques
     return MmSubmitRequest(ctx_id, req_id, ORBIS_NP_MATCHING2_REQUEST_EVENT_KICKOUT_ROOM_MEMBER,
                            MmCommand::KickoutRoomMember, MakeProtoPayload(req));
 }
-
 
 bool ResolvePeerAddress(std::string_view target_online_id, u32* out_addr, u16* out_port) {
     if (!out_addr || !out_port) {

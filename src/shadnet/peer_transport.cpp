@@ -105,8 +105,9 @@ void PeerTransport::OnReply(CommandType cmd, u64 pkt_id, ErrorType error,
     switch (cmd) {
     case CommandType::GetIceServers: {
         if (error != ErrorType::NoError) {
-            LOG_WARNING(ShadNet, "GetIceServers failed error={}; peers will use host candidates "
-                                 "only",
+            LOG_WARNING(ShadNet,
+                        "GetIceServers failed error={}; peers will use host candidates "
+                        "only",
                         static_cast<u32>(error));
             return;
         }
@@ -284,8 +285,7 @@ void PeerTransport::HandleSessionClosed(const NotifyPeerSessionClosed& notificat
         if (it->second.generation != notification.generation) {
             return;
         }
-        if (notification.reason != kReasonConnected &&
-            notification.reason != kReasonCancelled) {
+        if (notification.reason != kReasonConnected && notification.reason != kReasonCancelled) {
             // Next resolve for this peer asks for a new session rather than
             // rejoining the one that just failed.
             ++m_attempts[it->second.peer_npid];

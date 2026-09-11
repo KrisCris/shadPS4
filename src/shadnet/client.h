@@ -86,7 +86,9 @@ enum class CommandType : u16 {
     JoinRoom = 102,
     LeaveRoom = 103,
     SearchRoom = 104,
-    RequestSignalingInfos = 105,
+    // 105 was RequestSignalingInfos, retired with the STUN address
+    // registry it read from. Peers are reached through the peer-session
+    // commands instead. The number is not reused.
     ContextStop = 106,
     SetUserInfo = 107,
     SetRoomDataInternal = 108,
@@ -411,8 +413,7 @@ public:
     // Peer connectivity (protocol v2). Each returns the packet id, so the
     // caller can correlate the reply through onAsyncReply.
     u64 PeerSessionBegin(const std::string& target_npid, const std::string& title_id, u32 attempt);
-    u64 PeerSignal(u64 session_id, u32 generation, PeerSignalKind kind,
-                   const std::string& payload);
+    u64 PeerSignal(u64 session_id, u32 generation, PeerSignalKind kind, const std::string& payload);
     u64 PeerSessionEnd(u64 session_id, u32 generation, u32 reason);
     u64 GetIceServers();
 

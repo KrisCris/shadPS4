@@ -252,10 +252,11 @@ static void ReceiveThreadMain() {
 
         const auto nbytes = static_cast<size_t>(rc);
 
-        LOG_DEBUG(Lib_NpSignaling,
-                  "ReceiveThread DATA from {:#x}:{} size={} b0-4={:02x},{:02x},{:02x},{:02x},{:02x}",
-                  from_addr, sceNetNtohs(from_port), nbytes, buf[0], buf[1], buf[2], buf[3],
-                  nbytes >= 5 ? buf[4] : 0);
+        LOG_DEBUG(
+            Lib_NpSignaling,
+            "ReceiveThread DATA from {:#x}:{} size={} b0-4={:02x},{:02x},{:02x},{:02x},{:02x}",
+            from_addr, sceNetNtohs(from_port), nbytes, buf[0], buf[1], buf[2], buf[3],
+            nbytes >= 5 ? buf[4] : 0);
 
         if (!HasSignalingMagic(buf, nbytes)) {
             LOG_WARNING(Lib_NpSignaling, "ReceiveThread: dropping non-SHAD packet (size={})",

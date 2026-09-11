@@ -295,7 +295,8 @@ int main() {
         std::lock_guard lock(received_mutex);
         CHECK(answerer_received.size() == 1);
         CHECK(answerer_received[0].payload.size() == payload.size());
-        CHECK(std::memcmp(answerer_received[0].payload.data(), payload.data(), payload.size()) == 0);
+        CHECK(std::memcmp(answerer_received[0].payload.data(), payload.data(), payload.size()) ==
+              0);
         // The sender's identity comes from the connection that delivered the
         // datagram, so the answerer must see the offerer's virtual address.
         CHECK(answerer_received[0].from_addr_nbo == addr_offerer);

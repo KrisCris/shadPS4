@@ -364,9 +364,8 @@ void PeerConnection::HandleStateChanged(juice_state_t state) {
         s64 elapsed_ms = 0;
         {
             std::lock_guard lock(m_mutex);
-            if (m_agent != nullptr &&
-                juice_get_selected_candidates(m_agent, local, sizeof(local), remote,
-                                              sizeof(remote)) >= 0) {
+            if (m_agent != nullptr && juice_get_selected_candidates(m_agent, local, sizeof(local),
+                                                                    remote, sizeof(remote)) >= 0) {
                 m_selected_path = std::string(local) + " | " + remote;
                 path = m_selected_path;
             }

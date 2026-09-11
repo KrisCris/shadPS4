@@ -24,7 +24,9 @@ enum class MmCommand : u16 {
     JoinRoom = 102,
     LeaveRoom = 103,
     SearchRoom = 104,
-    RequestSignalingInfos = 105,
+    // 105 was RequestSignalingInfos, retired with the STUN address
+    // registry it read from. Peers are reached through the peer-session
+    // commands instead. The number is not reused.
     ContextStop = 106,
     SetUserInfo = 107,
     SetRoomDataInternal = 108,
@@ -84,7 +86,6 @@ s32 MmSetRoomDataExternal(OrbisNpMatching2ContextId ctx_id, OrbisNpMatching2Requ
                           const OrbisNpMatching2SetRoomDataExternalRequest& request);
 s32 MmKickoutRoomMember(OrbisNpMatching2ContextId ctx_id, OrbisNpMatching2RequestId req_id,
                         const OrbisNpMatching2KickoutRoomMemberRequest& request);
-
 
 // The peer's virtual address, opening a peer session if there is not one
 // yet. False means "not yet" as well as "no": setting a session up takes a
