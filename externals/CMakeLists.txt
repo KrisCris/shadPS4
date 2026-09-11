@@ -423,3 +423,11 @@ if (NOT TARGET ZArchive::zarchive)
     target_compile_features(zarchive PRIVATE cxx_std_20)
     add_library(ZArchive::zarchive ALIAS zarchive)
 endif()
+
+# libjuice (ICE agent: host/srflx/relay candidates, connectivity checks, TURN)
+# Pinned to release v1.7.3. USE_NETTLE stays off so the builtin crypto is used
+# and no new system dependency appears on Windows.
+set(NO_TESTS ON CACHE BOOL "" FORCE)
+set(NO_SERVER ON CACHE BOOL "" FORCE)
+set(USE_NETTLE OFF CACHE BOOL "" FORCE)
+add_subdirectory(libjuice EXCLUDE_FROM_ALL SYSTEM)

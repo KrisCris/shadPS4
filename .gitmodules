@@ -166,3 +166,6 @@
 	path = externals/imgui
 	url = https://github.com/shadexternals/imgui.git
 	branch = docking
+[submodule "externals/libjuice"]
+	path = externals/libjuice
+	url = https://github.com/paullouisageneau/libjuice.git

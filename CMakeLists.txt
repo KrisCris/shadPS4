@@ -39,6 +39,7 @@ cmake_dependent_option(ENABLE_SYSTEM_VULKAN "Enable the system Vulkan driver" OF
 option(ENABLE_DISCORD_RPC "Enable the Discord RPC integration" ON)
 option(ENABLE_UPDATER "Enables the options to updater" ON)
 option(ENABLE_TESTS "Build unit tests (requires GTest)" OFF)
+option(SHADPS4_BUILD_NET_TESTS "Build shadNet networking test executables" OFF)
 option(ENABLE_SYSTEM_LIBRARIES "Enable building against system libraries" OFF)
 
 # First, determine whether to use CMAKE_OSX_ARCHITECTURES or CMAKE_SYSTEM_PROCESSOR.
@@ -270,6 +271,14 @@ endif()
 
 add_subdirectory(externals)
 include_directories(src)
+
+# shadNet networking tests. Opt-in and independent of the emulator target, so
+# transport work can be iterated without a full shadps4 build.
+if (SHADPS4_BUILD_NET_TESTS)
+    add_executable(ice_smoke_test src/shadnet/tests/ice_smoke_test.cpp)
+    target_link_libraries(ice_smoke_test PRIVATE LibJuice::LibJuiceStatic)
+    target_compile_features(ice_smoke_test PRIVATE cxx_std_20)
+endif()
 
 set(AJM_LIB src/core/libraries/ajm/ajm.cpp
             src/core/libraries/ajm/ajm.h
