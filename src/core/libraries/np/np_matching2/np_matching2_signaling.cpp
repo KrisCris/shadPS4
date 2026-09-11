@@ -111,7 +111,7 @@ bool ResolvePeerEndpoint(const MemberCache& member, PeerInfo& peer) {
     const std::string online_id(member.np_id.handle.data);
     u32 resolved_addr = 0;
     u16 resolved_port = 0;
-    if (!online_id.empty() && RequestSignalingInfos(online_id, &resolved_addr, &resolved_port)) {
+    if (!online_id.empty() && ResolvePeerAddress(online_id, &resolved_addr, &resolved_port)) {
         peer.addr = resolved_addr;
         peer.port = resolved_port;
     }

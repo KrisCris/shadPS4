@@ -26,6 +26,7 @@
 #include "core/libraries/network/net_util.h"
 #include "net.h"
 #include "net_error.h"
+#include "shadnet/peer_transport.h"
 
 namespace Libraries::Net {
 
@@ -35,6 +36,11 @@ constexpr u16 kSignalingVPortNbo = 0xffff;
 constexpr size_t kVPortHeaderSize = 4;
 constexpr size_t kMaxUdpPayload = 65507;
 constexpr size_t kMaxP2PPayload = kMaxUdpPayload - kVPortHeaderSize;
+
+// Reported as the local port to anything that asks. Peers are addressed by
+// virtual address and vport, so no real port exists to report -- but zero
+// reads as "transport not ready" at several call sites, so it cannot be that.
+constexpr u16 kVirtualPort = 3658;
 
 #ifdef _WIN32
 constexpr net_socket kInvalidSocket = INVALID_SOCKET;
@@ -153,96 +159,43 @@ public:
     }
 
     bool Start() {
-#if !defined(__linux__) && !defined(_WIN32)
-        LOG_ERROR(Lib_Net, "P2P transport is currently supported on Linux and Windows");
-        return false;
-#else
         std::lock_guard lock(start_mutex);
         if (running.load(std::memory_order_acquire)) {
             return true;
         }
 
-        host_socket = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-        if (!IsValidSocket(host_socket)) {
-            LOG_ERROR(Lib_Net, "P2P transport socket() failed error={}", LastSocketError());
-            return false;
-        }
+        // There is no socket here any more. Every datagram rides the ICE
+        // agent that already holds the NAT mapping for that peer -- opening a
+        // second socket and sending from it would discard that mapping, which
+        // works on a LAN and fails everywhere else.
+        ShadNet::PeerTransport::Instance().SetFrameHandler(
+            [this](u32 from_addr_nbo, const u8* data, size_t size) {
+                OnFrame(from_addr_nbo, data, size);
+            });
 
-        int one = 1;
-        (void)::setsockopt(host_socket, SOL_SOCKET, SO_REUSEADDR,
-                           reinterpret_cast<const char*>(&one), sizeof(one));
-        if (!SetSocketNonBlocking(host_socket)) {
-            LOG_ERROR(Lib_Net, "P2P transport failed to make socket nonblocking error={}",
-                      LastSocketError());
-            CloseSocket(host_socket);
-            return false;
-        }
-
-        u16 requested_port = 0;
-        if (const char* env = std::getenv("SHADPS4_P2P_PORT"); env != nullptr && *env != '\0') {
-            char* end = nullptr;
-            const long parsed = std::strtol(env, &end, 10);
-            if (end == env || *end != '\0' || parsed < 1 || parsed > 65535) {
-                LOG_ERROR(Lib_Net, "Invalid SHADPS4_P2P_PORT='{}'", env);
-                CloseSocket(host_socket);
-                return false;
-            }
-            requested_port = static_cast<u16>(parsed);
-        }
-
-        sockaddr_in bind_addr{};
-        bind_addr.sin_family = AF_INET;
-        bind_addr.sin_addr.s_addr = htonl(INADDR_ANY);
-        bind_addr.sin_port = htons(requested_port);
-
-        if (::bind(host_socket, reinterpret_cast<sockaddr*>(&bind_addr), sizeof(bind_addr)) < 0) {
-            LOG_ERROR(Lib_Net, "P2P transport bind(port={}) failed error={}", requested_port,
-                      LastSocketError());
-            CloseSocket(host_socket);
-            return false;
-        }
-
-        sockaddr_in actual{};
-        socklen_t actual_len = sizeof(actual);
-        if (::getsockname(host_socket, reinterpret_cast<sockaddr*>(&actual), &actual_len) < 0) {
-            LOG_ERROR(Lib_Net, "P2P transport getsockname() failed error={}", LastSocketError());
-            CloseSocket(host_socket);
-            return false;
-        }
-
-        physical_port = ntohs(actual.sin_port);
         running.store(true, std::memory_order_release);
-        receive_thread = std::thread(&P2PTransport::ReceiveMain, this);
-
-        LOG_INFO(Lib_Net,
-                 "P2P transport ready: UDP physical_port={} (set SHADPS4_P2P_PORT to pin it)",
-                 physical_port);
+        LOG_INFO(Lib_Net, "P2P transport ready: datagrams route over peer connections");
         return true;
-#endif
     }
 
     void Stop() {
-#if defined(__linux__) || defined(_WIN32)
         std::lock_guard lock(start_mutex);
         if (!running.exchange(false, std::memory_order_acq_rel)) {
             return;
         }
-
-        if (receive_thread.joinable()) {
-            receive_thread.join();
-        }
-
-        CloseSocket(host_socket);
-        physical_port = 0;
-#endif
+        ShadNet::PeerTransport::Instance().SetFrameHandler(nullptr);
     }
 
     bool IsReady() const {
         return running.load(std::memory_order_acquire);
     }
 
+    // There is no physical port any longer. The game still puts a port in
+    // the packets it sends about itself, and several call sites treat zero as
+    // "not ready", so a fixed non-zero value is reported. Nothing routes on
+    // it: demultiplexing is by vport, inside the frame.
     u16 PhysicalPort() const {
-        return physical_port;
+        return kVirtualPort;
     }
 
     bool RegisterSocket(P2PSocket* socket, u16 requested_vport_nbo, u16* actual_vport_nbo) {
@@ -291,8 +244,8 @@ public:
 #if !defined(__linux__) && !defined(_WIN32)
         return -1;
 #else
-        if (!Start() || !IsValidSocket(host_socket) || (data == nullptr && len != 0) ||
-            len > kMaxP2PPayload || dest_addr_nbo == 0 || dest_port_nbo == 0) {
+        if (!Start() || (data == nullptr && len != 0) || len > kMaxP2PPayload ||
+            dest_addr_nbo == 0) {
             return -1;
         }
 
@@ -304,21 +257,13 @@ public:
             std::memcpy(framed.data() + kVPortHeaderSize, data, len);
         }
 
-        sockaddr_in dest{};
-        dest.sin_family = AF_INET;
-        dest.sin_addr.s_addr = dest_addr_nbo;
-        dest.sin_port = dest_port_nbo;
-
-        const auto rc = ::sendto(host_socket, reinterpret_cast<const char*>(framed.data()),
-                                 static_cast<int>(framed.size()), 0,
-                                 reinterpret_cast<const sockaddr*>(&dest), sizeof(dest));
+        const int rc =
+            ShadNet::PeerTransport::Instance().SendTo(dest_addr_nbo, framed.data(), framed.size());
         if (rc < 0) {
-            LOG_DEBUG(Lib_Net, "P2P sendto failed error={} dst={:#x}:{}", LastSocketError(),
-                      dest_addr_nbo, ntohs(dest_port_nbo));
-            return -1;
-        }
-        if (static_cast<size_t>(rc) != framed.size()) {
-            LOG_WARNING(Lib_Net, "P2P short UDP send: {} of {} bytes", rc, framed.size());
+            // Deliberately no fallback to a real socket. dest_addr_nbo is a
+            // virtual address; putting one on the wire either goes nowhere or
+            // goes to a stranger who happens to own that range.
+            LOG_DEBUG(Lib_Net, "P2P send dropped, no path to {:#x}", dest_addr_nbo);
             return -1;
         }
         return static_cast<int>(len);
@@ -393,75 +338,47 @@ private:
         QueueFor(channel).push_back(std::move(packet));
     }
 
-    void ReceiveMain() {
-#if defined(__linux__) || defined(_WIN32)
-        std::vector<u8> buffer(65536);
-        while (running.load(std::memory_order_acquire)) {
-            sockaddr_in from{};
-            socklen_t from_len = sizeof(from);
-#ifdef _WIN32
-            constexpr int receive_flags = 0;
-#else
-            constexpr int receive_flags = MSG_DONTWAIT;
-#endif
-            const auto rc = ::recvfrom(host_socket, reinterpret_cast<char*>(buffer.data()),
-                                       static_cast<int>(buffer.size()), receive_flags,
-                                       reinterpret_cast<sockaddr*>(&from), &from_len);
-
-            if (rc < 0) {
-                const int error = LastSocketError();
-                if (IsRetryableSocketError(error)) {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(2));
-                    continue;
-                }
-                LOG_WARNING(Lib_Net, "P2P recvfrom failed error={}", error);
-                std::this_thread::sleep_for(std::chrono::milliseconds(5));
-                continue;
-            }
-
-            if (rc < static_cast<decltype(rc)>(kVPortHeaderSize)) {
-                LOG_DEBUG(Lib_Net, "P2P dropping too-short UDP frame size={}", rc);
-                continue;
-            }
-
-            u16 source_vport_nbo = 0;
-            u16 dest_vport_nbo = 0;
-            std::memcpy(&source_vport_nbo, buffer.data(), sizeof(source_vport_nbo));
-            std::memcpy(&dest_vport_nbo, buffer.data() + sizeof(source_vport_nbo),
-                        sizeof(dest_vport_nbo));
-
-            const u8* payload = buffer.data() + kVPortHeaderSize;
-            const size_t payload_size = static_cast<size_t>(rc) - kVPortHeaderSize;
-
-            if (dest_vport_nbo == kSignalingVPortNbo) {
-                PushInternal(ClassifyInternal(payload, payload_size), from.sin_addr.s_addr,
-                             from.sin_port, payload, payload_size);
-                continue;
-            }
-
-            std::lock_guard lock(registry_mutex);
-            const auto it = game_sockets.find(dest_vport_nbo);
-            if (it == game_sockets.end() || it->second == nullptr) {
-                LOG_TRACE(Lib_Net, "P2P RX no socket for dst_vport={}", ntohs(dest_vport_nbo));
-                continue;
-            }
-
-            P2PDatagram packet{};
-            packet.source_addr = from.sin_addr.s_addr;
-            packet.source_port = from.sin_port;
-            packet.source_vport = source_vport_nbo;
-            packet.payload.assign(payload, payload + payload_size);
-            it->second->EnqueuePacket(std::move(packet));
+    // One complete framed datagram from a peer connection, on libjuice's
+    // thread. Same parse the UDP receive loop used to do; the only difference
+    // is where the bytes came from and that the source address is the peer's
+    // virtual address rather than whatever was on the packet.
+    void OnFrame(u32 from_addr_nbo, const u8* data, size_t size) {
+        if (data == nullptr || size < kVPortHeaderSize) {
+            LOG_DEBUG(Lib_Net, "P2P dropping too-short frame size={}", size);
+            return;
         }
-#endif
+
+        u16 source_vport_nbo = 0;
+        u16 dest_vport_nbo = 0;
+        std::memcpy(&source_vport_nbo, data, sizeof(source_vport_nbo));
+        std::memcpy(&dest_vport_nbo, data + sizeof(source_vport_nbo), sizeof(dest_vport_nbo));
+
+        const u8* payload = data + kVPortHeaderSize;
+        const size_t payload_size = size - kVPortHeaderSize;
+
+        if (dest_vport_nbo == kSignalingVPortNbo) {
+            PushInternal(ClassifyInternal(payload, payload_size), from_addr_nbo,
+                         Libraries::Net::sceNetHtons(kVirtualPort), payload, payload_size);
+            return;
+        }
+
+        std::lock_guard lock(registry_mutex);
+        const auto it = game_sockets.find(dest_vport_nbo);
+        if (it == game_sockets.end() || it->second == nullptr) {
+            LOG_TRACE(Lib_Net, "P2P RX no socket for dst_vport={}", ntohs(dest_vport_nbo));
+            return;
+        }
+
+        P2PDatagram packet{};
+        packet.source_addr = from_addr_nbo;
+        packet.source_port = Libraries::Net::sceNetHtons(kVirtualPort);
+        packet.source_vport = source_vport_nbo;
+        packet.payload.assign(payload, payload + payload_size);
+        it->second->EnqueuePacket(std::move(packet));
     }
 
     mutable std::mutex start_mutex;
     std::atomic<bool> running{false};
-    std::thread receive_thread;
-
-    net_socket host_socket{kInvalidSocket};
-    u16 physical_port{0};
 
     std::mutex registry_mutex;
     std::unordered_map<u16, P2PSocket*> game_sockets;
@@ -653,8 +570,7 @@ int P2PSocket::Bind(const OrbisNetSockaddr* addr, u32 addrlen) {
     local_addr.sin_vport = actual_vport;
     bound = true;
 
-    LOG_INFO(Lib_Net, "P2P bind: physical_port={} virtual_port={}",
-             P2PTransport::Instance().PhysicalPort(), ntohs(local_addr.sin_vport));
+    LOG_INFO(Lib_Net, "P2P bind: virtual_port={}", ntohs(local_addr.sin_vport));
     return 0;
 }
 
@@ -954,8 +870,11 @@ u16 GetP2PConfiguredPort() {
 }
 
 u32 GetP2PAdvertisedAddr() {
-    auto* netinfo = Common::Singleton<NetUtil::NetUtilInternal>::Instance();
-    return netinfo->GetExternalIp();
+    // What we tell peers we are. That is now the virtual address the server
+    // leased us, which is stable for the whole connection -- unlike a NAT
+    // mapping, which is what this used to report and which changes underneath
+    // anything that stores it.
+    return ShadNet::PeerTransport::Instance().LocalVirtualAddr();
 }
 
 bool EnsureP2PTransport() {

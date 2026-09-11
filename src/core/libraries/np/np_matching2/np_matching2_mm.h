@@ -89,6 +89,9 @@ s32 MmKickoutRoomMember(OrbisNpMatching2ContextId ctx_id, OrbisNpMatching2Reques
 u32 GetMmServerAddr();
 u16 GetMmServerUdpPort();
 
-bool RequestSignalingInfos(std::string_view target_online_id, u32* out_addr, u16* out_port);
+// The peer's virtual address, opening a peer session if there is not one
+// yet. False means "not yet" as well as "no": setting a session up takes a
+// round trip and then an ICE exchange, and callers already retry.
+bool ResolvePeerAddress(std::string_view target_online_id, u32* out_addr, u16* out_port);
 
 } // namespace Libraries::Np::NpMatching2

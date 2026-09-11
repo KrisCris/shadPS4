@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 
+#include "common/elf_info.h"
 #include "common/logging/log.h"
 #include "core/libraries/network/net.h"
 #include "core/libraries/network/net_upnp.h"
@@ -22,6 +23,7 @@
 #include "core/libraries/np/np_signaling/np_signaling_stubs.h"
 #include "shadnet.pb.h"
 #include "shadnet/client.h"
+#include "shadnet/peer_transport.h"
 
 namespace Libraries::Np::NpMatching2 {
 
@@ -628,10 +630,14 @@ void HandleRoomMessage(const ShadNet::NotifyRoomMessage& n) {
 
 void OnMatchingReply(ShadNet::CommandType cmd, u64 pkt_id, ShadNet::ErrorType error,
                      const std::vector<u8>& body) {
-    if (cmd == ShadNet::CommandType::RequestSignalingInfos) {
-        std::lock_guard lock(g_mm.sig_mutex);
-        g_mm.sig_replies[pkt_id] = {error, body};
-        g_mm.sig_cv.notify_all();
+    // Peer connectivity replies (120-123) belong to the transport. The
+    // session a player opens arrives here, in the reply; the other player
+    // learns of the same session from a notification instead.
+    if (cmd == ShadNet::CommandType::PeerSessionBegin ||
+        cmd == ShadNet::CommandType::PeerSignal ||
+        cmd == ShadNet::CommandType::PeerSessionEnd ||
+        cmd == ShadNet::CommandType::GetIceServers) {
+        ShadNet::PeerTransport::Instance().OnReply(cmd, pkt_id, error, body);
         return;
     }
 
@@ -693,7 +699,7 @@ void SetMmShadNetClient(std::shared_ptr<ShadNet::ShadNetClient> client,
         .advertised_addr = Net::GetP2PAdvertisedAddr,
         .ensure_transport = Net::EnsureP2PTransport,
     });
-    NpSignaling::Stubs::SetPeerResolver(matching2_enabled ? RequestSignalingInfos : nullptr);
+    NpSignaling::Stubs::SetPeerResolver(matching2_enabled ? ResolvePeerAddress : nullptr);
     NpSignaling::Stubs::SetMatching2Enabled(matching2_enabled);
     NpSignaling::Stubs::SetMmServerEndpoint(server_addr, server_udp_port);
     if (matching2_enabled) {
@@ -703,6 +709,16 @@ void SetMmShadNetClient(std::shared_ptr<ShadNet::ShadNetClient> client,
     }
     client->onRoomEvent = [](const ShadNet::NotifyRoomEvent& n) { HandleRoomEvent(n); };
     client->onRoomMessage = [](const ShadNet::NotifyRoomMessage& n) { HandleRoomMessage(n); };
+
+    if (matching2_enabled) {
+        // The title id is part of the server's pairing key, so both players
+        // must send the same one or they open two sessions instead of joining
+        // one.
+        ShadNet::PeerTransport::Instance().Attach(client,
+                                                  std::string(Common::ElfInfo::Instance().GameSerial()));
+    } else {
+        ShadNet::PeerTransport::Instance().Detach();
+    }
 }
 
 void ClearMmShadNetClient() {
@@ -719,6 +735,7 @@ void ClearMmShadNetClient() {
         old_client->onRoomEvent = nullptr;
         old_client->onRoomMessage = nullptr;
     }
+    ShadNet::PeerTransport::Instance().Detach();
     NpSignaling::Stubs::SetTransportHooks({});
     NpSignaling::Stubs::SetPeerResolver(nullptr);
     NpSignaling::Stubs::SetMatching2Enabled(false);
@@ -1182,60 +1199,28 @@ u16 GetMmServerUdpPort() {
     return g_mm.server_udp_port;
 }
 
-bool RequestSignalingInfos(std::string_view target_online_id, u32* out_addr, u16* out_port) {
+bool ResolvePeerAddress(std::string_view target_online_id, u32* out_addr, u16* out_port) {
     if (!out_addr || !out_port) {
         return false;
     }
     if (IsMatching2BackendDisabled()) {
         return false;
     }
-    std::shared_ptr<ShadNet::ShadNetClient> client;
-    {
-        std::lock_guard lock(g_mm.mutex);
-        client = g_mm.client;
-    }
-    if (!client || !client->IsAuthenticated()) {
-        return false;
-    }
 
-    shadnet::RequestSignalingInfosRequest req;
-    req.set_target_npid(std::string(target_online_id));
-    const u64 pkt_id =
-        client->SubmitRequest(ShadNet::CommandType::RequestSignalingInfos, MakeProtoPayload(req));
-
-    std::pair<ShadNet::ErrorType, std::vector<u8>> reply;
-    {
-        std::unique_lock lock(g_mm.sig_mutex);
-        if (!g_mm.sig_cv.wait_for(lock, std::chrono::seconds(5),
-                                  [&] { return g_mm.sig_replies.count(pkt_id) > 0; })) {
-            LOG_WARNING(Lib_NpMatching2, "timed out for '{}'", target_online_id);
-            return false;
-        }
-        reply = std::move(g_mm.sig_replies[pkt_id]);
-        g_mm.sig_replies.erase(pkt_id);
-    }
-    if (reply.first != ShadNet::ErrorType::NoError) {
+    // The address handed back is virtual: it identifies the peer and nothing
+    // routes on it. Where that peer actually is, and whether the path is
+    // direct or relayed, is settled by ICE underneath and can change without
+    // anything up here noticing.
+    //
+    // Zero means "not yet" rather than "no". Opening a session takes a round
+    // trip to the server and then an ICE exchange, so the first few calls for
+    // a peer will fail; the activation path already retries on a timer.
+    const u32 addr = ShadNet::PeerTransport::Instance().ResolvePeer(target_online_id);
+    if (addr == 0) {
         return false;
     }
-
-    shadnet::RequestSignalingInfosReply rep;
-    const std::string proto = ExtractProtoBytes(reply.second);
-    if (proto.empty() || !rep.ParseFromString(proto)) {
-        return false;
-    }
-    const std::string addr_str = rep.target_ip();
-    const u16 port_host = static_cast<u16>(rep.target_port());
-    if (addr_str.empty() || port_host == 0) {
-        return false;
-    }
-
-    u32 addr_nbo = 0;
-    if (Libraries::Net::sceNetInetPton(Net::ORBIS_NET_AF_INET, addr_str.c_str(), &addr_nbo) <= 0) {
-        return false;
-    }
-    *out_addr = addr_nbo;
-    *out_port = Libraries::Net::sceNetHtons(port_host);
-    LOG_DEBUG(Lib_NpMatching2, "'{}' -> {}:{}", target_online_id, addr_str, port_host);
+    *out_addr = addr;
+    *out_port = Libraries::Net::sceNetHtons(Net::GetP2PConfiguredPort());
     return true;
 }
 

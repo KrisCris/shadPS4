@@ -855,8 +855,10 @@ SignalingHandshake MakeHandshakeLocked(const ConnectionInfo& ci, HandshakeKind k
                     ORBIS_NP_ONLINEID_MAX_LENGTH);
     }
     std::memcpy(pkt.online_id_to, ci.online_id.data, ORBIS_NP_ONLINEID_MAX_LENGTH);
-    auto* netinfo = Common::Singleton<NetUtil::NetUtilInternal>::Instance();
-    pkt.mapped_addr = netinfo->GetExternalIp();
+    // Our virtual address, not the real external one. Nothing reads this
+    // field any more -- the receiver trusts the connection instead -- so
+    // sending the machine's actual public address would leak it for nothing.
+    pkt.mapped_addr = Stubs::AdvertisedAddr();
     pkt.mapped_port = 0;
     return pkt;
 }
@@ -990,12 +992,14 @@ void HandleHandshakePacket(u32 from_addr, u16 from_port, const SignalingHandshak
                 return;
             }
             ConnectionInfo& ci = g_connections[conn_id];
+            // A packet's self-reported mapped_addr is deliberately ignored.
+            // The source address now comes from the peer connection the
+            // datagram arrived on, which the sender cannot forge; preferring
+            // a field inside the packet would let one peer redirect another's
+            // traffic.
             ci.addr = from_addr;
             ci.port = from_port;
             ci.peer_activated = true;
-            if (pkt.mapped_addr != 0) {
-                ci.addr = pkt.mapped_addr;
-            }
             if (ci.state != ConnState::Established) {
                 SetConnStateLocked(ci, ConnState::SendingAccept);
                 if (!ci.timeout_callout_armed) {
@@ -1011,12 +1015,8 @@ void HandleHandshakePacket(u32 from_addr, u16 from_port, const SignalingHandshak
         } else if (kind == HandshakeKind::Accept) {
             ConnectionInfo& ci = g_connections[conn_id];
             ci.peer_activated = true;
-            if (pkt.mapped_addr != 0) {
-                ci.addr = pkt.mapped_addr;
-            } else {
-                ci.addr = from_addr;
-                ci.port = from_port;
-            }
+            ci.addr = from_addr;
+            ci.port = from_port;
             if (ci.state == ConnState::SendingOffer || ci.state == ConnState::WaitAccept ||
                 ci.state == ConnState::SendingAccept || ci.state == ConnState::WaitOffer) {
                 SetConnStateLocked(ci, ConnState::ConnCheck);
@@ -1149,8 +1149,10 @@ static SignalingControl MakeControlLocked(const ConnectionInfo& ci, ControlKind 
                     ORBIS_NP_ONLINEID_MAX_LENGTH);
     }
     std::memcpy(pkt.online_id_to, ci.online_id.data, ORBIS_NP_ONLINEID_MAX_LENGTH);
-    auto* netinfo = Common::Singleton<NetUtil::NetUtilInternal>::Instance();
-    pkt.mapped_addr = netinfo->GetExternalIp();
+    // Our virtual address, not the real external one. Nothing reads this
+    // field any more -- the receiver trusts the connection instead -- so
+    // sending the machine's actual public address would leak it for nothing.
+    pkt.mapped_addr = Stubs::AdvertisedAddr();
     pkt.mapped_port = 0;
     return pkt;
 }
@@ -1241,7 +1243,7 @@ void HandleControlPacket(u32 from_addr, u16 from_port, const SignalingControl& p
             }
             ConnectionInfo& ci = g_connections[conn_id];
             ci.peer_activated = true;
-            ci.addr = pkt.mapped_addr != 0 ? pkt.mapped_addr : from_addr;
+            ci.addr = from_addr;
             ci.port = from_port;
             if (ci.state == ConnState::Inactive) {
                 if (!ci.timeout_callout_armed) {
@@ -1261,9 +1263,6 @@ void HandleControlPacket(u32 from_addr, u16 from_port, const SignalingControl& p
         } else if (kind == ControlKind::ActivationAck) {
             ConnectionInfo& ci = g_connections[conn_id];
             ci.peer_activated = true;
-            if (pkt.mapped_addr != 0) {
-                ci.addr = pkt.mapped_addr;
-            }
         } else if (kind == ControlKind::Established) {
             ConnectionInfo& ci = g_connections[conn_id];
             ci.peer_established = true;

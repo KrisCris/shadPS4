@@ -1248,6 +1248,8 @@ set(SHADNET src/shadnet/client.cpp
             src/shadnet/peer_address.h
             src/shadnet/peer_connection.cpp
             src/shadnet/peer_connection.h
+            src/shadnet/peer_transport.cpp
+            src/shadnet/peer_transport.h
             src/shadnet/server_probe.cpp
             src/shadnet/server_probe.h
             "${SHADNET_PROTO_OUT}/shadnet.pb.cc"
@@ -1284,6 +1286,8 @@ target_link_libraries(shadps4 PRIVATE stb::headers lfreist-hwinfo::hwinfo nlohma
 target_link_libraries(shadps4 PRIVATE Freetype::Freetype)
 target_link_libraries(shadps4 PRIVATE libprotobuf)
 target_link_libraries(shadps4 PRIVATE ZArchive::zarchive)
+# ICE. Only src/shadnet includes its headers; nothing in Core sees libjuice.
+target_link_libraries(shadps4 PRIVATE LibJuice::LibJuiceStatic)
 target_include_directories(shadps4 PRIVATE "${SHADNET_PROTO_OUT}")
 
 if (${CMAKE_SYSTEM_NAME} STREQUAL "FreeBSD")
