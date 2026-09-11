@@ -96,12 +96,27 @@ run_pair() {
     return 0
 }
 
+# Inverts run_pair: the case passes only when the agents fail to connect.
+#
+# Worth having for exactly one reason. A negative case that is silently
+# mis-built -- a rule that does not match, a service that never started --
+# passes for the wrong reason and reports nothing. Every case that uses this
+# has to be one where a positive twin exists and does connect, so a failure
+# here means the one thing that changed is what stopped it.
+run_pair_expect_failure() {
+    if run_pair "$@"; then
+        log "expected no connection, but the peers connected"
+        return 1
+    fi
+    return 0
+}
+
 # --------------------------------------------------------------------------
 # Cases
 # --------------------------------------------------------------------------
 
 CASES=(same-lan two-nats lan-and-external symmetric-turn overlapping-subnets
-       ipv6-only dual-stack-v4-broken)
+       ipv6-only dual-stack-v4-broken turn-credential-expired)
 
 # Both peers on one LAN. The pair must be host: if a case this simple reaches
 # for a reflexive or relayed candidate, the agent is ignoring local interfaces
@@ -228,6 +243,31 @@ case_dual_stack_v4_broken() {
 
     run_pair lab-hostA1 lab-hostB1 dual-stack-v4-broken \
         --expect-family ipv6
+}
+
+# The same topology as symmetric-turn, which does connect, with one change:
+# the TURN credential expired ten minutes ago. The relay must refuse the
+# allocation, and with the direct path blocked there is nothing else left, so
+# the peers must NOT connect.
+#
+# Without this, nothing proves the relay checks the credential at all -- a
+# server handing out malformed or stale credentials would look identical to
+# one handing out good ones, because the positive case only ever sees fresh
+# ones.
+case_turn_credential_expired() {
+    lab_make_internet
+    lab_make_server
+    lab_make_site A 1 2 symmetric
+    lab_make_site B 2 3 symmetric
+    lab_block_direct 2 3
+    lab_start_turn || return 1
+    lab_turn_credential "labpeer" -600
+
+    run_pair_expect_failure lab-hostA1 lab-hostB1 turn-credential-expired \
+        --stun "${SRV_ADDR}:3478" \
+        --turn "${SRV_ADDR}:3478" \
+        --turn-user "$LAB_TURN_USER" --turn-pass "$LAB_TURN_PASS" \
+        --expect-relayed --timeout 15
 }
 
 # --------------------------------------------------------------------------

@@ -76,6 +76,7 @@ so the matrix passed or failed by timing.
 | `overlapping-subnets` | both LANs on `10.1.0.0/24` → srflx, not a wrong-host connection |
 | `ipv6-only` | IPv4 stripped entirely → host pair on IPv6 |
 | `dual-stack-v4-broken` | IPv4 peer path blocked → finishes over IPv6 |
+| `turn-credential-expired` | expired TURN credential → relay refused, no connection |
 
 Two notes on the assertions, both learned by getting them wrong first:
 
@@ -87,12 +88,22 @@ Two notes on the assertions, both learned by getting them wrong first:
   assertion that the path was IPv6 proves nothing if IPv4 was present and
   merely lost the race.
 
+`turn-credential-expired` is the only case that passes by *not* connecting. It
+is the same topology as `symmetric-turn`, which does connect, with the
+credential expired ten minutes ago — so the one thing that changed is the one
+thing that stopped it. A negative case without a positive twin passes just as
+happily when a rule is mistyped or a service never started.
+
 ## What is not here
 
 The server's own rules — pairing, generations, authorisation, virtual-address
-uniqueness, credential expiry, late packets from a superseded attempt — are
-covered in the shadNet repo's `test_peer_sessions`, where `SessionCoordinator`
-lives and they can be driven deterministically instead of raced between two
-processes. The broker in `peer_netns_agent` is a stand-in that forwards
-signaling blobs unread, which keeps a failure in this matrix attributable to
-ICE rather than to the server.
+leasing, room fan-out, late packets from a superseded attempt — are covered in
+the shadNet repo's `test_peer_sessions`, where `SessionCoordinator` lives and
+they can be driven deterministically instead of raced between two processes.
+(Writing the three-player case there turned up a real bug: the server was
+handing out a fresh virtual address per session, so a third player joining
+changed the address the first two already knew.)
+
+The broker in `peer_netns_agent` is a stand-in that forwards signaling blobs
+unread, which keeps a failure in this matrix attributable to ICE rather than
+to the server.
