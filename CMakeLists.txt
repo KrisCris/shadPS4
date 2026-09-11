@@ -1246,6 +1246,8 @@ set(SHADNET src/shadnet/client.cpp
             src/shadnet/client.h
             src/shadnet/peer_address.cpp
             src/shadnet/peer_address.h
+            src/shadnet/peer_connection.cpp
+            src/shadnet/peer_connection.h
             src/shadnet/server_probe.cpp
             src/shadnet/server_probe.h
             "${SHADNET_PROTO_OUT}/shadnet.pb.cc"
@@ -1479,4 +1481,22 @@ if (SHADPS4_BUILD_NET_TESTS)
     target_include_directories(peer_proto_encode PRIVATE "${SHADNET_PROTO_OUT}")
     target_link_libraries(peer_proto_encode PRIVATE libprotobuf)
     target_compile_features(peer_proto_encode PRIVATE cxx_std_20)
+
+    # Two real ICE agents driven against each other through a stand-in
+    # signaling channel. The emulator's log.cpp is NOT linked: it reaches into
+    # Core headers that use clang-only attributes. Logging is never initialised
+    # in a test anyway, so LOG_ short-circuits on a null logger and the test
+    # defines the two symbols that has to resolve against.
+    add_executable(peer_connection_test
+        src/shadnet/tests/peer_connection_test.cpp
+        src/shadnet/peer_connection.cpp
+    )
+    target_include_directories(peer_connection_test PRIVATE "${SHADNET_PROTO_OUT}")
+    target_link_libraries(peer_connection_test PRIVATE
+        LibJuice::LibJuiceStatic spdlog::spdlog fmt::fmt magic_enum::magic_enum
+        nlohmann_json::nlohmann_json toml11::toml11)
+    target_compile_features(peer_connection_test PRIVATE cxx_std_20)
+    if (WIN32)
+        target_link_libraries(peer_connection_test PRIVATE ws2_32)
+    endif()
 endif()
