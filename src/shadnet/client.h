@@ -42,7 +42,7 @@ static constexpr u32 SHAD_CONNECT_TIMEOUT_MS = 10000; // 10 second connect/hands
 static constexpr u32 SHAD_CONNECT_MAX_ATTEMPTS = 4;
 static constexpr u32 SHAD_CONNECT_RETRY_BACKOFF_MS =
     1000; // base backoff, doubled per retry (cap 8s)
-static constexpr u32 SHAD_PROTOCOL_VERSION = 1;
+static constexpr u32 SHAD_PROTOCOL_VERSION = 2;
 static constexpr u32 SHAD_MAX_PACKET_SIZE = 0x800000; // 8 MiB
 
 // Protocol enumerations (must match shadnet server protocol.h)
@@ -97,6 +97,11 @@ enum class CommandType : u16 {
     GetUserInfoList = 113,
     GetRoomMemberDataExternalList = 114,
     SendRoomMessage = 115,
+    // Peer connectivity (protocol v2)
+    PeerSessionBegin = 120,
+    PeerSignal = 121,
+    PeerSessionEnd = 122,
+    GetIceServers = 123,
     // Title User Storage (TUS)
     TusSetData = 201,
     TusGetData = 202,
@@ -125,6 +130,11 @@ enum class NotificationType : u16 {
     RoomEvent = 10,
     RoomMessage = 11,
     WebApiPushEvent = 17, // Generic NP WebApi push event
+    // Peer connectivity (protocol v2). PeerSignal carries an opaque ICE
+    // description or candidate from the other participant of a session.
+    PeerSessionOpened = 20,
+    PeerSignal = 21,
+    PeerSessionClosed = 22,
 };
 
 enum class ErrorType : uint8_t {
@@ -222,6 +232,56 @@ struct NotifyWebApiPushEvent {
     // Optional extended-data (key,value) pairs (e.g. friendlist trigger/additionalTrigger,
     // presence gameStatus/gameData). Empty when the server sends none / is older.
     std::vector<std::pair<std::string, std::string>> extdData;
+};
+
+// Peer connectivity (protocol v2)
+
+enum class PeerSignalKind : u32 {
+    Description = 0,   // full local ICE description (SDP)
+    Candidate = 1,     // one trickled candidate
+    GatheringDone = 2, // payload is empty
+};
+
+// NotificationType::PeerSessionOpened (20)
+struct NotifyPeerSessionOpened {
+    u64 session_id = 0;
+    u32 generation = 0;
+    // Exactly one participant offers, chosen by the server so both sides agree
+    // no matter who began first.
+    bool is_offerer = false;
+    std::string peer_npid;
+    // Host byte order, inside 198.18.0.0/15. Converted to network byte order
+    // once, where the transport records them; see PeerAddressTable.
+    u32 local_virtual_addr = 0;
+    u32 peer_virtual_addr = 0;
+    std::string title_id;
+};
+
+// NotificationType::PeerSignal (21)
+struct NotifyPeerSignal {
+    u64 session_id = 0;
+    u32 generation = 0;
+    PeerSignalKind kind = PeerSignalKind::Description;
+    std::string payload;
+    // Filled by the server from the sender's authenticated connection, so it
+    // cannot be spoofed by the sender.
+    std::string from_npid;
+};
+
+// NotificationType::PeerSessionClosed (22)
+struct NotifyPeerSessionClosed {
+    u64 session_id = 0;
+    u32 generation = 0;
+    u32 reason = 0; // 0 cancelled, 1 connected, 2 failed, 3 logout
+};
+
+struct IceServerEntry {
+    std::string host;
+    u16 port = 0;
+    bool is_turn = false;
+    std::string username;   // empty for plain STUN
+    std::string credential; // empty for plain STUN
+    u64 expires_at = 0;     // unix seconds; 0 when not applicable
 };
 
 struct MatchingBinAttr {
@@ -322,6 +382,9 @@ public:
     std::function<void(const NotifyRoomEvent&)> onRoomEvent;
     std::function<void(const NotifyRoomMessage&)> onRoomMessage;
     std::function<void(const NotifyWebApiPushEvent&)> onWebApiPushEvent;
+    std::function<void(const NotifyPeerSessionOpened&)> onPeerSessionOpened;
+    std::function<void(const NotifyPeerSignal&)> onPeerSignal;
+    std::function<void(const NotifyPeerSessionClosed&)> onPeerSessionClosed;
     // Async reply callback.
     //   cmd    —command this reply is for (matches the request's cmd)
     //   pkt_id —packet id echoed back from the original request header
@@ -344,6 +407,20 @@ public:
     u64 SetAppearOffline(bool enable);
     // Global online ID to account ID resolution
     u64 LookupOnlineId(const std::string& npid);
+
+    // Peer connectivity (protocol v2). Each returns the packet id, so the
+    // caller can correlate the reply through onAsyncReply.
+    u64 PeerSessionBegin(const std::string& target_npid, const std::string& title_id, u32 attempt);
+    u64 PeerSignal(u64 session_id, u32 generation, PeerSignalKind kind,
+                   const std::string& payload);
+    u64 PeerSessionEnd(u64 session_id, u32 generation, u32 reason);
+    u64 GetIceServers();
+
+    // Decodes a GetIceServers reply body (the bytes after the ErrorType byte).
+    static std::vector<IceServerEntry> ParseIceServersReply(const std::vector<u8>& body);
+    // Decodes a PeerSessionBegin reply body the same way.
+    static bool ParsePeerSessionBeginReply(const std::vector<u8>& body,
+                                           NotifyPeerSessionOpened* out);
 
 private:
     void ConnectThread();

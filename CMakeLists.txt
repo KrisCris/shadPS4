@@ -272,14 +272,6 @@ endif()
 add_subdirectory(externals)
 include_directories(src)
 
-# shadNet networking tests. Opt-in and independent of the emulator target, so
-# transport work can be iterated without a full shadps4 build.
-if (SHADPS4_BUILD_NET_TESTS)
-    add_executable(ice_smoke_test src/shadnet/tests/ice_smoke_test.cpp)
-    target_link_libraries(ice_smoke_test PRIVATE LibJuice::LibJuiceStatic)
-    target_compile_features(ice_smoke_test PRIVATE cxx_std_20)
-endif()
-
 set(AJM_LIB src/core/libraries/ajm/ajm.cpp
             src/core/libraries/ajm/ajm.h
             src/core/libraries/ajm/ajm_aac.cpp
@@ -1252,6 +1244,8 @@ add_custom_command(
 
 set(SHADNET src/shadnet/client.cpp
             src/shadnet/client.h
+            src/shadnet/peer_address.cpp
+            src/shadnet/peer_address.h
             src/shadnet/server_probe.cpp
             src/shadnet/server_probe.h
             "${SHADNET_PROTO_OUT}/shadnet.pb.cc"
@@ -1457,4 +1451,32 @@ install(TARGETS shadps4 BUNDLE DESTINATION .)
 else()
     enable_testing()
     add_subdirectory(tests)
+endif()
+
+# shadNet networking tests. Opt-in and independent of the emulator target, so
+# transport work can be iterated without a full shadps4 build.
+if (SHADPS4_BUILD_NET_TESTS)
+    add_executable(ice_smoke_test src/shadnet/tests/ice_smoke_test.cpp)
+    target_link_libraries(ice_smoke_test PRIVATE LibJuice::LibJuiceStatic)
+    target_compile_features(ice_smoke_test PRIVATE cxx_std_20)
+
+    add_executable(peer_address_test
+        src/shadnet/tests/peer_address_test.cpp
+        src/shadnet/peer_address.cpp
+    )
+    target_compile_features(peer_address_test PRIVATE cxx_std_20)
+    if (WIN32)
+        target_link_libraries(peer_address_test PRIVATE ws2_32)
+    endif()
+
+    # Encodes canonical peer messages with THIS repo's shadnet.proto. The
+    # shadNet repo decodes the same file with its own copy, which is the only
+    # way a field-number drift between the two hand-synced files gets caught.
+    add_executable(peer_proto_encode
+        src/shadnet/tests/peer_proto_encode.cpp
+        "${SHADNET_PROTO_OUT}/shadnet.pb.cc"
+    )
+    target_include_directories(peer_proto_encode PRIVATE "${SHADNET_PROTO_OUT}")
+    target_link_libraries(peer_proto_encode PRIVATE libprotobuf)
+    target_compile_features(peer_proto_encode PRIVATE cxx_std_20)
 endif()

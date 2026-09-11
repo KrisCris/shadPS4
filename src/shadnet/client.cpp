@@ -495,6 +495,79 @@ u64 ShadNetClient::SubmitRequest(CommandType cmd, const std::vector<u8>& payload
     return pkt_id;
 }
 
+u64 ShadNetClient::PeerSessionBegin(const std::string& target_npid,
+                                   const std::string& title_id, u32 attempt) {
+    shadnet::PeerSessionBeginRequest req;
+    req.set_target_npid(target_npid);
+    req.set_title_id(title_id);
+    req.set_attempt(attempt);
+    return SubmitRequest(CommandType::PeerSessionBegin, MakeProtoPayload(req));
+}
+
+u64 ShadNetClient::PeerSignal(u64 session_id, u32 generation, PeerSignalKind kind,
+                              const std::string& payload) {
+    shadnet::PeerSignalRequest req;
+    req.set_session_id(session_id);
+    req.set_generation(generation);
+    req.set_kind(static_cast<shadnet::PeerSignalKind>(kind));
+    req.set_payload(payload);
+    return SubmitRequest(CommandType::PeerSignal, MakeProtoPayload(req));
+}
+
+u64 ShadNetClient::PeerSessionEnd(u64 session_id, u32 generation, u32 reason) {
+    shadnet::PeerSessionEndRequest req;
+    req.set_session_id(session_id);
+    req.set_generation(generation);
+    req.set_reason(reason);
+    return SubmitRequest(CommandType::PeerSessionEnd, MakeProtoPayload(req));
+}
+
+u64 ShadNetClient::GetIceServers() {
+    shadnet::GetIceServersRequest req;
+    return SubmitRequest(CommandType::GetIceServers, MakeProtoPayload(req));
+}
+
+std::vector<IceServerEntry> ShadNetClient::ParseIceServersReply(const std::vector<u8>& body) {
+    std::vector<IceServerEntry> out;
+    shadnet::GetIceServersReply pb;
+    const std::string blob = ExtractBlob(body, 0);
+    if (blob.empty() || !pb.ParseFromString(blob)) {
+        LOG_WARNING(ShadNet, "GetIceServers reply parse error");
+        return out;
+    }
+    for (const auto& s : pb.servers()) {
+        IceServerEntry entry;
+        entry.host = s.host();
+        entry.port = static_cast<u16>(s.port());
+        entry.is_turn = s.is_turn();
+        entry.username = s.username();
+        entry.credential = s.credential();
+        entry.expires_at = s.expires_at();
+        out.push_back(std::move(entry));
+    }
+    return out;
+}
+
+bool ShadNetClient::ParsePeerSessionBeginReply(const std::vector<u8>& body,
+                                               NotifyPeerSessionOpened* out) {
+    if (out == nullptr) {
+        return false;
+    }
+    shadnet::PeerSessionBeginReply pb;
+    const std::string blob = ExtractBlob(body, 0);
+    if (blob.empty() || !pb.ParseFromString(blob)) {
+        LOG_WARNING(ShadNet, "PeerSessionBegin reply parse error");
+        return false;
+    }
+    out->session_id = pb.session_id();
+    out->generation = pb.generation();
+    out->is_offerer = pb.is_offerer();
+    out->peer_npid = pb.peer_npid();
+    out->local_virtual_addr = pb.local_virtual_addr();
+    out->peer_virtual_addr = pb.peer_virtual_addr();
+    return true;
+}
+
 u64 ShadNetClient::AddFriend(const std::string& npid) {
     shadnet::FriendCommandRequest req;
     req.set_npid(npid);
@@ -874,6 +947,63 @@ void ShadNetClient::HandleNotification(u16 cmd_raw, const std::vector<u8>& paylo
         LOG_DEBUG(ShadNet, "FriendStatus '{}' is {}", n.npid, n.online ? "online" : "offline");
         if (onFriendStatus)
             onFriendStatus(n);
+        break;
+    }
+    case NotificationType::PeerSessionOpened: {
+        shadnet::NotifyPeerSessionOpened pb;
+        if (!pb.ParseFromString(blob)) {
+            LOG_WARNING(ShadNet, "PeerSessionOpened parse error");
+            break;
+        }
+        NotifyPeerSessionOpened n;
+        n.session_id = pb.session_id();
+        n.generation = pb.generation();
+        n.is_offerer = pb.is_offerer();
+        n.peer_npid = pb.peer_npid();
+        n.local_virtual_addr = pb.local_virtual_addr();
+        n.peer_virtual_addr = pb.peer_virtual_addr();
+        n.title_id = pb.title_id();
+        LOG_INFO(ShadNet, "Peer session {} gen {} opened with '{}' ({})", n.session_id,
+                 n.generation, n.peer_npid, n.is_offerer ? "we offer" : "we answer");
+        if (onPeerSessionOpened)
+            onPeerSessionOpened(n);
+        break;
+    }
+    case NotificationType::PeerSignal: {
+        shadnet::NotifyPeerSignal pb;
+        if (!pb.ParseFromString(blob)) {
+            LOG_WARNING(ShadNet, "PeerSignal parse error");
+            break;
+        }
+        NotifyPeerSignal n;
+        n.session_id = pb.session_id();
+        n.generation = pb.generation();
+        n.kind = static_cast<PeerSignalKind>(pb.kind());
+        n.payload = pb.payload();
+        n.from_npid = pb.from_npid();
+        // Length only: an ICE description carries the session's short-term
+        // credentials and must never reach the log.
+        LOG_DEBUG(ShadNet, "Peer signal: session {} gen {} kind={} from '{}' bytes={}",
+                  n.session_id, n.generation, static_cast<u32>(n.kind), n.from_npid,
+                  n.payload.size());
+        if (onPeerSignal)
+            onPeerSignal(n);
+        break;
+    }
+    case NotificationType::PeerSessionClosed: {
+        shadnet::NotifyPeerSessionClosed pb;
+        if (!pb.ParseFromString(blob)) {
+            LOG_WARNING(ShadNet, "PeerSessionClosed parse error");
+            break;
+        }
+        NotifyPeerSessionClosed n;
+        n.session_id = pb.session_id();
+        n.generation = pb.generation();
+        n.reason = pb.reason();
+        LOG_INFO(ShadNet, "Peer session {} gen {} closed, reason={}", n.session_id, n.generation,
+                 n.reason);
+        if (onPeerSessionClosed)
+            onPeerSessionClosed(n);
         break;
     }
     case NotificationType::RoomEvent: {

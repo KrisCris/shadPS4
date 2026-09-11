@@ -778,3 +778,91 @@ message SyncTrophiesReply {
 message SetClientVersionRequest {
     string version = 1; 
 }
+
+// Peer connectivity (protocol v2)
+//
+// A peer session pairs two authenticated accounts for one summon attempt. The
+// server assigns the session id, a generation (bumped on re-ring), a
+// deterministic offerer, and one virtual address per participant. ICE
+// descriptions and trickled candidates are forwarded verbatim between the two
+// participants; the server never parses them.
+
+enum PeerSignalKind {
+    PEER_SIGNAL_DESCRIPTION    = 0;  // full local ICE description (SDP)
+    PEER_SIGNAL_CANDIDATE      = 1;  // one trickled candidate
+    PEER_SIGNAL_GATHERING_DONE = 2;  // payload is empty
+}
+
+message PeerSessionBeginRequest {
+    string target_npid = 1;
+    string title_id    = 2;
+    uint32 attempt     = 3;  // increments per bell ring; distinguishes retries
+}
+
+message PeerSessionBeginReply {
+    uint64 session_id         = 1;
+    uint32 generation         = 2;
+    bool   is_offerer         = 3;
+    uint32 local_virtual_addr = 4;  // host byte order, inside 198.18.0.0/15
+    uint32 peer_virtual_addr  = 5;
+    string peer_npid          = 6;
+}
+
+message PeerSignalRequest {
+    uint64         session_id = 1;
+    uint32         generation = 2;
+    PeerSignalKind kind       = 3;
+    string         payload    = 4;
+}
+
+message PeerSignalReply {}
+
+message PeerSessionEndRequest {
+    uint64 session_id = 1;
+    uint32 generation = 2;
+    uint32 reason     = 3;  // 0 cancelled, 1 connected, 2 failed, 3 logout
+}
+
+message PeerSessionEndReply {}
+
+message IceServer {
+    string host       = 1;
+    uint32 port       = 2;
+    bool   is_turn    = 3;
+    string username   = 4;  // empty for plain STUN
+    string credential = 5;  // empty for plain STUN
+    uint64 expires_at = 6;  // unix seconds; 0 when not applicable
+}
+
+message GetIceServersRequest {}
+
+message GetIceServersReply {
+    repeated IceServer servers = 1;
+}
+
+// NotificationType::PeerSessionOpened (20)
+message NotifyPeerSessionOpened {
+    uint64 session_id         = 1;
+    uint32 generation         = 2;
+    bool   is_offerer         = 3;
+    string peer_npid          = 4;
+    uint32 local_virtual_addr = 5;
+    uint32 peer_virtual_addr  = 6;
+    string title_id           = 7;
+}
+
+// NotificationType::PeerSignal (21)
+message NotifyPeerSignal {
+    uint64         session_id = 1;
+    uint32         generation = 2;
+    PeerSignalKind kind       = 3;
+    string         payload    = 4;
+    string         from_npid  = 5;
+}
+
+// NotificationType::PeerSessionClosed (22)
+message NotifyPeerSessionClosed {
+    uint64 session_id = 1;
+    uint32 generation = 2;
+    uint32 reason     = 3;
+}
