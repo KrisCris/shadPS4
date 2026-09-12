@@ -673,6 +673,7 @@ set(NP_LIBS src/core/libraries/np/np_error.h
             src/core/libraries/np/np_score/np_score_ctx.h
             src/core/libraries/np/np_signaling/np_signaling.cpp
             src/core/libraries/np/np_signaling/np_signaling.h
+            src/core/libraries/np/np_signaling/np_signaling_activation.cpp
             src/core/libraries/np/np_signaling/np_signaling_state.cpp
             src/core/libraries/np/np_signaling/np_signaling_state.h
             src/core/libraries/np/np_signaling/np_signaling_helpers.cpp
@@ -1462,6 +1463,15 @@ endif()
 # shadNet networking tests. Opt-in and independent of the emulator target, so
 # transport work can be iterated without a full shadps4 build.
 if (SHADPS4_BUILD_NET_TESTS)
+    enable_testing()
+    add_executable(np_activation_test
+        src/shadnet/tests/np_activation_test.cpp
+        src/core/libraries/np/np_signaling/np_signaling_activation.cpp
+    )
+    target_link_libraries(np_activation_test PRIVATE
+        spdlog::spdlog fmt::fmt magic_enum::magic_enum)
+    add_test(NAME np_activation COMMAND np_activation_test)
+
     add_executable(ice_smoke_test src/shadnet/tests/ice_smoke_test.cpp)
     target_link_libraries(ice_smoke_test PRIVATE LibJuice::LibJuiceStatic)
     target_compile_features(ice_smoke_test PRIVATE cxx_std_20)

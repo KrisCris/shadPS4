@@ -900,64 +900,6 @@ void StartHandshakeInitiator(OrbisNpSignalingConnectionId conn_id) {
     }
 }
 
-void QueueActivationLocked(OrbisNpSignalingConnectionId conn_id, std::string_view peer_online_id,
-                           bool start_handshake) {
-    g_pending_activations.push_back({conn_id, std::string(peer_online_id), start_handshake});
-}
-
-void ProcessPendingActivations() {
-    std::vector<PendingActivation> work;
-    {
-        SignalingMutexGuard lock;
-        if (g_pending_activations.empty()) {
-            return;
-        }
-        work.swap(g_pending_activations);
-    }
-
-    for (const PendingActivation& act : work) {
-        bool already_established = false;
-        {
-            SignalingMutexGuard lock;
-            const auto it = g_connections.find(act.conn_id);
-            if (it == g_connections.end() || it->second.state == ConnState::Inactive) {
-                continue;
-            }
-        }
-
-        u32 peer_addr = 0;
-        u16 peer_port = 0;
-        const bool resolved = Stubs::ResolvePeer(act.peer_online_id, &peer_addr, &peer_port) &&
-                              peer_addr != 0 && peer_port != 0;
-
-        if (!resolved) {
-            LOG_WARNING(Lib_NpSignaling, "peer '{}' endpoint unresolved; connection {} 30s timeout",
-                        act.peer_online_id, act.conn_id);
-            continue;
-        }
-
-        {
-            SignalingMutexGuard lock;
-            const auto it = g_connections.find(act.conn_id);
-            if (it == g_connections.end() || it->second.state == ConnState::Inactive) {
-                continue;
-            }
-            it->second.addr = peer_addr;
-            it->second.port = peer_port;
-            SendActivationRequestLocked(it->second);
-            already_established = it->second.state == ConnState::Established;
-            LOG_INFO(Lib_NpSignaling, "connection {} sent local activation to '{}' at {:#x}:{}{}",
-                     act.conn_id, act.peer_online_id, peer_addr, sceNetNtohs(peer_port),
-                     act.start_handshake ? "" : " (existing connection)");
-        }
-        if (act.start_handshake) {
-            StartHandshakeInitiator(act.conn_id);
-        } else if (already_established) {
-            EstablishConnection(act.conn_id, false);
-        }
-    }
-}
-
 void HandleHandshakePacket(u32 from_addr, u16 from_port, const SignalingHandshake& pkt) {
     char from_id_buf[ORBIS_NP_ONLINEID_MAX_LENGTH + 1]{};
     std::memcpy(from_id_buf, pkt.online_id_from, ORBIS_NP_ONLINEID_MAX_LENGTH);

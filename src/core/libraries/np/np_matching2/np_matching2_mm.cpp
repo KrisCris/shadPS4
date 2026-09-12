@@ -1191,7 +1191,7 @@ bool ResolvePeerAddress(std::string_view target_online_id, u32* out_addr, u16* o
     // trip to the server and then an ICE exchange, so the first few calls for
     // a peer will fail; the activation path already retries on a timer.
     const u32 addr = ShadNet::PeerTransport::Instance().ResolvePeer(target_online_id);
-    if (addr == 0) {
+    if (addr == 0 || !ShadNet::PeerTransport::Instance().IsPeerConnected(addr)) {
         return false;
     }
     *out_addr = addr;
