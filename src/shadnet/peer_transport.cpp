@@ -15,14 +15,17 @@
 #include "common/logging/log.h"
 #include "shadnet/juice_log.h"
 #include "shadnet/peer_connection.h"
+#include "shadnet/peer_session_policy.h"
 
 namespace ShadNet {
 
 namespace {
 
-// Reasons the server sends with PeerSessionClosed.
+// Reasons the server sends with PeerSessionClosed, and that PeerSessionEnd
+// takes.
 constexpr u32 kReasonCancelled = 0;
 constexpr u32 kReasonConnected = 1;
+constexpr u32 kReasonFailed = 2;
 
 } // namespace
 
@@ -30,6 +33,8 @@ PeerTransport& PeerTransport::Instance() {
     static PeerTransport transport;
     return transport;
 }
+
+PeerTransport::PeerTransport() : m_pending_begins(std::make_unique<PendingPeerBegins>()) {}
 
 PeerTransport::~PeerTransport() {
     Detach();
@@ -85,7 +90,7 @@ void PeerTransport::Detach() {
         m_local_virtual_addr = 0;
         m_ice_servers.clear();
         m_ice_servers_pkt_id = 0;
-        m_pending_begins.clear();
+        m_pending_begins->Clear();
         m_attempts.clear();
     }
 
@@ -135,7 +140,20 @@ void PeerTransport::OnReply(CommandType cmd, u64 pkt_id, ErrorType error,
     }
     case CommandType::PeerSessionBegin: {
         if (error != ErrorType::NoError) {
-            LOG_WARNING(ShadNet, "PeerSessionBegin failed error={}", static_cast<u32>(error));
+            std::optional<std::string> npid;
+            {
+                std::lock_guard lock(m_mutex);
+                npid = m_pending_begins->Fail(pkt_id, PeerClock::now());
+            }
+            if (error == ErrorType::NotFound) {
+                // The server's answer while the peer is logged out. The game
+                // keeps resolving, and the next begin after the retry delay
+                // goes through once the peer is back.
+                LOG_DEBUG(ShadNet, "peer '{}' is not online; will ask again", npid.value_or("?"));
+            } else {
+                LOG_WARNING(ShadNet, "PeerSessionBegin for '{}' failed error={}",
+                            npid.value_or("?"), static_cast<u32>(error));
+            }
             return;
         }
         NotifyPeerSessionOpened opened;
@@ -165,12 +183,15 @@ void PeerTransport::HandleSessionOpened(const NotifyPeerSessionOpened& notificat
     const u32 local_addr_nbo = htonl(notification.local_virtual_addr);
     const u32 peer_addr_nbo = htonl(notification.peer_virtual_addr);
 
-    std::unique_ptr<PeerConnection> superseded;
+    std::vector<std::unique_ptr<PeerConnection>> superseded;
+    std::optional<EndedSession> to_end;
+    std::shared_ptr<ShadNetClient> client;
     PeerConnection* to_start = nullptr;
     std::vector<IceServerEntry> ice_servers;
 
     {
         std::lock_guard lock(m_mutex);
+        client = m_client;
 
         const auto existing = m_sessions.find(notification.session_id);
         if (existing != m_sessions.end()) {
@@ -181,64 +202,95 @@ void PeerTransport::HandleSessionOpened(const NotifyPeerSessionOpened& notificat
             }
             // A re-ring. The old attempt's agent keeps a socket open and its
             // late packets would arrive looking legitimate, so it goes.
-            superseded = std::move(existing->second.connection);
-            m_sessions.erase(existing);
+            superseded.push_back(DetachSessionLocked(notification.session_id));
         }
 
-        m_pending_begins.erase(notification.peer_npid);
-        m_local_virtual_addr = local_addr_nbo;
-        ice_servers = m_ice_servers;
+        m_pending_begins->Complete(notification.peer_npid);
 
-        PeerConnection::Params params;
-        params.session_id = notification.session_id;
-        params.generation = notification.generation;
-        params.is_offerer = notification.is_offerer;
-        params.peer_npid = notification.peer_npid;
-        params.peer_virtual_addr_nbo = peer_addr_nbo;
+        // A second session with the same peer. Both players began at once with
+        // different attempt numbers -- one of them restarted, so its count
+        // started over -- and the server paired each request separately. Both
+        // sides are told about both sessions, so both keep the newer one, and
+        // the older is ended so its attempt number is free again.
+        for (const auto& [session_id, session] : m_sessions) {
+            if (session.peer_npid != notification.peer_npid) {
+                continue;
+            }
+            if (session_id > notification.session_id) {
+                to_end = EndedSession{notification.session_id, notification.generation};
+            } else {
+                to_end = EndedSession{session_id, session.generation};
+            }
+            break;
+        }
+        if (to_end.has_value() && to_end->session_id == notification.session_id) {
+            LOG_INFO(ShadNet, "peer session {} with '{}' is older than the one in use; ending it",
+                     notification.session_id, notification.peer_npid);
+        } else {
+            if (to_end.has_value()) {
+                LOG_INFO(ShadNet, "peer session {} with '{}' replaced by newer session {}",
+                         to_end->session_id, notification.peer_npid, notification.session_id);
+                superseded.push_back(DetachSessionLocked(to_end->session_id));
+            }
 
-        const u64 session_id = notification.session_id;
-        auto connection = std::make_unique<PeerConnection>(
-            params, ice_servers,
-            [this, session_id](PeerSignalKind kind, const std::string& payload) {
-                // Called from libjuice's thread, which is why nothing here
-                // may block: the mutex is held only to copy two values out.
-                std::shared_ptr<ShadNetClient> client;
-                u32 generation = 0;
-                {
-                    std::lock_guard lock(m_mutex);
-                    const auto it = m_sessions.find(session_id);
-                    if (it == m_sessions.end() || !m_client) {
-                        return;
+            m_local_virtual_addr = local_addr_nbo;
+            ice_servers = m_ice_servers;
+
+            PeerConnection::Params params;
+            params.session_id = notification.session_id;
+            params.generation = notification.generation;
+            params.is_offerer = notification.is_offerer;
+            params.peer_npid = notification.peer_npid;
+            params.peer_virtual_addr_nbo = peer_addr_nbo;
+
+            const u64 session_id = notification.session_id;
+            auto connection = std::make_unique<PeerConnection>(
+                params, ice_servers,
+                [this, session_id](PeerSignalKind kind, const std::string& payload) {
+                    // Called from libjuice's thread, which is why nothing here
+                    // may block: the mutex is held only to copy two values out.
+                    std::shared_ptr<ShadNetClient> client;
+                    u32 generation = 0;
+                    {
+                        std::lock_guard lock(m_mutex);
+                        const auto it = m_sessions.find(session_id);
+                        if (it == m_sessions.end() || !m_client) {
+                            return;
+                        }
+                        generation = it->second.generation;
+                        client = m_client;
                     }
-                    generation = it->second.generation;
-                    client = m_client;
-                }
-                client->PeerSignal(session_id, generation, kind, payload);
-            },
-            [this](u32 from_addr_nbo, const u8* data, size_t size) {
-                FrameHandler handler;
-                {
-                    std::lock_guard lock(m_mutex);
-                    handler = m_on_frame;
-                }
-                if (handler) {
-                    handler(from_addr_nbo, data, size);
-                }
-            });
+                    client->PeerSignal(session_id, generation, kind, payload);
+                },
+                [this](u32 from_addr_nbo, const u8* data, size_t size) {
+                    FrameHandler handler;
+                    {
+                        std::lock_guard lock(m_mutex);
+                        handler = m_on_frame;
+                    }
+                    if (handler) {
+                        handler(from_addr_nbo, data, size);
+                    }
+                });
 
-        Session& session = m_sessions[notification.session_id];
-        session.connection = std::move(connection);
-        session.generation = notification.generation;
-        session.peer_npid = notification.peer_npid;
-        session.peer_addr_nbo = peer_addr_nbo;
-        to_start = session.connection.get();
+            Session& session = m_sessions[notification.session_id];
+            session.connection = std::move(connection);
+            session.generation = notification.generation;
+            session.peer_npid = notification.peer_npid;
+            session.peer_addr_nbo = peer_addr_nbo;
+            session.opened_at = PeerClock::now();
+            to_start = session.connection.get();
 
-        m_addresses.Insert(peer_addr_nbo, notification.peer_npid, notification.session_id);
+            m_addresses.Insert(peer_addr_nbo, notification.peer_npid, notification.session_id);
+        }
     }
 
-    // Both outside the lock: destroying joins libjuice's thread, and Start()
+    // All outside the lock: destroying joins libjuice's thread, and Start()
     // synchronously emits the offerer's description through the signal sender.
-    superseded.reset();
+    superseded.clear();
+    if (to_end.has_value() && client) {
+        client->PeerSessionEnd(to_end->session_id, to_end->generation, kReasonCancelled);
+    }
     if (to_start != nullptr) {
         to_start->Start();
     }
@@ -301,17 +353,22 @@ void PeerTransport::HandleSessionClosed(const NotifyPeerSessionClosed& notificat
     DropSession(notification.session_id);
 }
 
+std::unique_ptr<PeerConnection> PeerTransport::DetachSessionLocked(u64 session_id) {
+    const auto it = m_sessions.find(session_id);
+    if (it == m_sessions.end()) {
+        return nullptr;
+    }
+    std::unique_ptr<PeerConnection> connection = std::move(it->second.connection);
+    m_sessions.erase(it);
+    m_addresses.RemoveSession(session_id);
+    return connection;
+}
+
 void PeerTransport::DropSession(u64 session_id) {
     std::unique_ptr<PeerConnection> connection;
     {
         std::lock_guard lock(m_mutex);
-        const auto it = m_sessions.find(session_id);
-        if (it == m_sessions.end()) {
-            return;
-        }
-        connection = std::move(it->second.connection);
-        m_sessions.erase(it);
-        m_addresses.RemoveSession(session_id);
+        connection = DetachSessionLocked(session_id);
     }
     // ~PeerConnection joins libjuice's thread, whose callbacks take m_mutex.
     connection.reset();
@@ -352,30 +409,66 @@ u32 PeerTransport::LocalVirtualAddr() const {
 
 u32 PeerTransport::ResolvePeer(std::string_view npid) {
     const std::string key(npid);
+    const PeerClock::time_point now = PeerClock::now();
 
     std::shared_ptr<ShadNetClient> client;
     std::string title_id;
     u32 attempt = 0;
+    bool begin = false;
+    std::unique_ptr<PeerConnection> stale;
+    std::optional<EndedSession> stale_session;
     {
         std::lock_guard lock(m_mutex);
         if (const std::optional<u32> known = m_addresses.AddrFor(key); known.has_value()) {
-            return *known;
-        }
-        if (m_pending_begins.count(key) != 0) {
-            // Already asking. The caller retries on a timer.
-            return 0;
-        }
-        if (!m_client) {
-            return 0;
+            const std::optional<u64> session_id = m_addresses.SessionFor(*known);
+            const auto it =
+                session_id.has_value() ? m_sessions.find(*session_id) : m_sessions.end();
+            if (it == m_sessions.end() || !it->second.connection) {
+                return *known;
+            }
+            const PeerTransportState state = it->second.connection->State();
+            const PeerClock::duration age = now - it->second.opened_at;
+            if (!IsPeerSessionStale(state, age)) {
+                return *known;
+            }
+            // Past saving -- the peer was offline when it was made, restarted
+            // since, or ICE gave up. Holding on to it would hand the game this
+            // address for good, and the peer would never be asked again.
+            LOG_INFO(ShadNet, "peer session {} with '{}' is {} after {}s; opening a new one",
+                     it->first, key, PeerTransportStateName(state),
+                     std::chrono::duration_cast<std::chrono::seconds>(age).count());
+            stale_session = EndedSession{it->first, it->second.generation};
+            stale = DetachSessionLocked(it->first);
+            ++m_attempts[key];
         }
         client = m_client;
-        title_id = m_title_id;
-        attempt = m_attempts[key];
-        m_pending_begins.insert(key);
+        if (client && m_pending_begins->TryStart(key, now)) {
+            begin = true;
+            title_id = m_title_id;
+            attempt = m_attempts[key];
+        }
+    }
+
+    // Outside the lock, for the same reasons as DropSession.
+    stale.reset();
+    if (!client) {
+        return 0;
+    }
+    if (stale_session.has_value()) {
+        // Tells the peer too, if it is still holding its side.
+        client->PeerSessionEnd(stale_session->session_id, stale_session->generation, kReasonFailed);
+    }
+    if (!begin) {
+        // A begin is already in flight, or waiting out a refusal.
+        return 0;
     }
 
     LOG_DEBUG(ShadNet, "opening a peer session with '{}' (attempt {})", key, attempt);
-    client->PeerSessionBegin(key, title_id, attempt);
+    const u64 pkt_id = client->PeerSessionBegin(key, title_id, attempt);
+    {
+        std::lock_guard lock(m_mutex);
+        m_pending_begins->SetPacketId(key, pkt_id);
+    }
     return 0;
 }
 

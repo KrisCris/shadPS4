@@ -3,13 +3,13 @@
 
 #pragma once
 
+#include <chrono>
 #include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <string_view>
 #include <unordered_map>
-#include <unordered_set>
 #include <vector>
 
 #include "common/types.h"
@@ -24,6 +24,7 @@
 namespace ShadNet {
 
 class PeerConnection;
+class PendingPeerBegins;
 
 // Owns every peer connection and the virtual-address table, and is the only
 // place that knows a virtual address corresponds to an ICE agent.
@@ -78,6 +79,9 @@ public:
     // The peer's virtual address, opening a session if there is not one yet.
     // Returns 0 while the session is still being set up: the caller is
     // expected to retry, which is what the activation path already does.
+    //
+    // A session that never connected, or failed, is replaced here rather than
+    // returned; see IsPeerSessionStale.
     u32 ResolvePeer(std::string_view npid);
 
     // Whether a path to this address is up right now. A leased address is not
@@ -89,18 +93,29 @@ public:
     std::string SelectedPathFor(u32 addr_nbo) const;
 
 private:
-    PeerTransport() = default;
+    PeerTransport();
 
     struct Session {
         std::unique_ptr<PeerConnection> connection;
         u32 generation = 0;
         std::string peer_npid;
         u32 peer_addr_nbo = 0;
+        std::chrono::steady_clock::time_point opened_at{};
+    };
+
+    // A session to end on the server once the lock is released.
+    struct EndedSession {
+        u64 session_id = 0;
+        u32 generation = 0;
     };
 
     void HandleSessionOpened(const NotifyPeerSessionOpened& notification);
     void HandlePeerSignal(const NotifyPeerSignal& notification);
     void HandleSessionClosed(const NotifyPeerSessionClosed& notification);
+
+    // Takes a session and its address out of the tables and hands back its
+    // connection, which the caller must destroy after releasing m_mutex.
+    std::unique_ptr<PeerConnection> DetachSessionLocked(u64 session_id);
 
     // Removes a session and destroys its connection outside the lock:
     // ~PeerConnection joins libjuice's thread, which must not happen while
@@ -119,10 +134,11 @@ private:
     std::vector<IceServerEntry> m_ice_servers;
     u64 m_ice_servers_pkt_id = 0;
 
-    // npids with a begin request already in flight, so a caller that retries
-    // -- and the activation path retries on a timer -- does not open a second
-    // session while the first is still being set up.
-    std::unordered_set<std::string> m_pending_begins;
+    // Begin requests in flight, so a caller that retries -- and the activation
+    // path retries on a timer -- does not open a second session while the
+    // first is still being set up. Behind a pointer only to keep libjuice out
+    // of this header.
+    std::unique_ptr<PendingPeerBegins> m_pending_begins;
 
     // Bumped when a session with this peer ends without connecting. It is
     // part of the server's pairing key, so a retry opens a genuinely new

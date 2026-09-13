@@ -1253,6 +1253,8 @@ set(SHADNET src/shadnet/client.cpp
             src/shadnet/peer_connection.h
             src/shadnet/peer_datagram.cpp
             src/shadnet/peer_datagram.h
+            src/shadnet/peer_session_policy.cpp
+            src/shadnet/peer_session_policy.h
             src/shadnet/peer_transport.cpp
             src/shadnet/peer_transport.h
             src/shadnet/server_probe.cpp
@@ -1522,6 +1524,19 @@ if (SHADPS4_BUILD_NET_TESTS)
         target_link_libraries(juice_log_test PRIVATE ws2_32)
     endif()
     add_test(NAME juice_log COMMAND juice_log_test)
+
+    # When a peer's session is replaced, and begin requests in flight. Links
+    # libjuice only for the PeerTransportState header; no agent is created.
+    add_executable(peer_session_policy_test
+        src/shadnet/tests/peer_session_policy_test.cpp
+        src/shadnet/peer_session_policy.cpp
+    )
+    target_link_libraries(peer_session_policy_test PRIVATE LibJuice::LibJuiceStatic)
+    target_compile_features(peer_session_policy_test PRIVATE cxx_std_20)
+    if (WIN32)
+        target_link_libraries(peer_session_policy_test PRIVATE ws2_32)
+    endif()
+    add_test(NAME peer_session_policy COMMAND peer_session_policy_test)
 
     # Two real ICE agents driven against each other through a stand-in
     # signaling channel. The emulator's log.cpp is NOT linked: it reaches into
