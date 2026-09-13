@@ -13,6 +13,7 @@
 #endif
 
 #include "common/logging/log.h"
+#include "shadnet/juice_log.h"
 #include "shadnet/peer_connection.h"
 
 namespace ShadNet {
@@ -44,6 +45,10 @@ void PeerTransport::Attach(std::shared_ptr<ShadNetClient> client, std::string ti
         Detach();
         return;
     }
+
+    // Before any peer session exists, so libjuice's account of the first
+    // connection lands in the log too.
+    InstallJuiceLogForwarding();
 
     {
         std::lock_guard lock(m_mutex);
