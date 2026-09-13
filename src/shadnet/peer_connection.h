@@ -13,6 +13,7 @@
 #include <juice/juice.h>
 
 #include "common/types.h"
+#include "shadnet/peer_datagram.h"
 
 // Only src/shadnet may include libjuice; see CONTRIBUTING.md. This header is
 // consumed inside that module, never from Core.
@@ -88,6 +89,10 @@ public:
     // Returns bytes accepted, or -1. Fails rather than buffering while the
     // path is not yet selected: a caller that believes a datagram was sent
     // when it was dropped is worse than one that sees the failure.
+    //
+    // Any size up to kPeerMaxDatagram: larger datagrams go out in pieces that
+    // fit a 1280-byte path, and the peer delivers them whole. See
+    // peer_datagram.h for why the path MTU cannot simply be left to IP.
     int Send(const u8* data, size_t size);
 
     PeerTransportState State() const;
@@ -161,6 +166,14 @@ private:
     std::string m_selected_path;
     std::chrono::steady_clock::time_point m_started_at{};
     std::atomic<s64> m_setup_ms{0};
+
+    // The game sends from several threads, so ids are handed out atomically;
+    // the reassembler only needs them distinct among datagrams in flight.
+    std::atomic<u16> m_next_message_id{0};
+    // Touched only from libjuice's thread, via HandleReceive.
+    PeerDatagramReassembler m_reassembler;
+    u64 m_reported_abandoned = 0;
+    bool m_warned_malformed = false;
 };
 
 } // namespace ShadNet

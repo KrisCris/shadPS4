@@ -1249,6 +1249,8 @@ set(SHADNET src/shadnet/client.cpp
             src/shadnet/peer_address.h
             src/shadnet/peer_connection.cpp
             src/shadnet/peer_connection.h
+            src/shadnet/peer_datagram.cpp
+            src/shadnet/peer_datagram.h
             src/shadnet/peer_transport.cpp
             src/shadnet/peer_transport.h
             src/shadnet/server_probe.cpp
@@ -1501,9 +1503,18 @@ if (SHADPS4_BUILD_NET_TESTS)
     # Core headers that use clang-only attributes. Logging is never initialised
     # in a test anyway, so LOG_ short-circuits on a null logger and the test
     # defines the two symbols that has to resolve against.
+    # Splitting and reassembly of game datagrams, no network involved.
+    add_executable(peer_datagram_test
+        src/shadnet/tests/peer_datagram_test.cpp
+        src/shadnet/peer_datagram.cpp
+    )
+    target_compile_features(peer_datagram_test PRIVATE cxx_std_20)
+    add_test(NAME peer_datagram COMMAND peer_datagram_test)
+
     add_executable(peer_connection_test
         src/shadnet/tests/peer_connection_test.cpp
         src/shadnet/peer_connection.cpp
+        src/shadnet/peer_datagram.cpp
     )
     target_include_directories(peer_connection_test PRIVATE "${SHADNET_PROTO_OUT}")
     target_link_libraries(peer_connection_test PRIVATE
@@ -1520,6 +1531,7 @@ if (SHADPS4_BUILD_NET_TESTS)
     add_executable(peer_netns_agent
         src/shadnet/tests/peer_netns_agent.cpp
         src/shadnet/peer_connection.cpp
+        src/shadnet/peer_datagram.cpp
     )
     target_include_directories(peer_netns_agent PRIVATE "${SHADNET_PROTO_OUT}")
     target_link_libraries(peer_netns_agent PRIVATE

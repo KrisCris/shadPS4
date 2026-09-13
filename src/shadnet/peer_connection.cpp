@@ -276,7 +276,7 @@ void PeerConnection::OnRemoteGatheringDone() {
 }
 
 int PeerConnection::Send(const u8* data, size_t size) {
-    if (data == nullptr || size == 0) {
+    if (data == nullptr || size == 0 || size > kPeerMaxDatagram) {
         return -1;
     }
     if (m_state.load() != PeerTransportState::Connected) {
@@ -292,10 +292,27 @@ int PeerConnection::Send(const u8* data, size_t size) {
         return -1;
     }
 
-    const int rc = juice_send(agent, reinterpret_cast<const char*>(data), size);
-    if (rc < 0) {
-        LOG_DEBUG(ShadNet, "Peer session {}: send of {} bytes failed rc={}", m_params.session_id,
-                  size, rc);
+    const u16 message_id = m_next_message_id.fetch_add(1, std::memory_order_relaxed);
+    int rc = JUICE_ERR_SUCCESS;
+    size_t piece_size = 0;
+    const bool sent = SplitPeerDatagram(
+        data, size, message_id, [agent, &rc, &piece_size](const u8* piece, size_t length) {
+            piece_size = length;
+            rc = juice_send(agent, reinterpret_cast<const char*>(piece), length);
+            return rc >= 0;
+        });
+    if (!sent) {
+        if (rc == JUICE_ERR_TOO_LARGE) {
+            // Every piece is sized for a 1280-byte path, so this is a path
+            // narrower than IPv6 allows -- worth seeing without a debug filter.
+            LOG_WARNING(ShadNet,
+                        "Peer session {}: {}-byte piece of a {}-byte datagram too large for the "
+                        "path to '{}'",
+                        m_params.session_id, piece_size, size, m_params.peer_npid);
+        } else {
+            LOG_DEBUG(ShadNet, "Peer session {}: send of {} bytes failed rc={}",
+                      m_params.session_id, size, rc);
+        }
         return -1;
     }
     return static_cast<int>(size);
@@ -414,9 +431,29 @@ void PeerConnection::HandleReceive(const char* data, size_t size) {
     if (data == nullptr || size == 0 || !m_on_receive) {
         return;
     }
-    // The sender's identity comes from the connection that delivered the
-    // datagram, never from anything inside it.
-    m_on_receive(m_params.peer_virtual_addr_nbo, reinterpret_cast<const u8*>(data), size);
+    const u8* bytes = reinterpret_cast<const u8*>(data);
+    const bool accepted = m_reassembler.Accept(
+        bytes, size, std::chrono::steady_clock::now(), [this](const u8* datagram, size_t length) {
+            // The sender's identity comes from the connection that delivered
+            // the datagram, never from anything inside it.
+            m_on_receive(m_params.peer_virtual_addr_nbo, datagram, length);
+        });
+
+    if (!accepted && !m_warned_malformed) {
+        // Once per connection: a peer on a build without piece headers sends
+        // nothing else, and would otherwise flood the log.
+        m_warned_malformed = true;
+        LOG_WARNING(ShadNet,
+                    "Peer session {}: dropping a {}-byte datagram from '{}' that is not a valid "
+                    "piece (first byte {:#04x}); is the peer on an older build?",
+                    m_params.session_id, size, m_params.peer_npid, bytes[0]);
+    }
+    const u64 abandoned = m_reassembler.AbandonedCount();
+    if (abandoned != m_reported_abandoned) {
+        LOG_DEBUG(ShadNet, "Peer session {}: {} datagram(s) from '{}' lost a piece in transit",
+                  m_params.session_id, abandoned - m_reported_abandoned, m_params.peer_npid);
+        m_reported_abandoned = abandoned;
+    }
 }
 
 } // namespace ShadNet

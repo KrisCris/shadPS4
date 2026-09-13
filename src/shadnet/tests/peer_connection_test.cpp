@@ -276,27 +276,39 @@ int main() {
     CHECK(!answerer.SelectedPath().empty());
     CHECK(offerer.SetupMillis() > 0);
 
-    // A full-size framed game datagram, not a toy payload.
-    std::vector<u8> payload(1200);
-    for (size_t i = 0; i < payload.size(); ++i) {
-        payload[i] = static_cast<u8>(i * 7 + 3);
-    }
-    CHECK(offerer.Send(payload.data(), payload.size()) == static_cast<int>(payload.size()));
-
-    const bool delivered = WaitUntil(
-        [&] {
+    // Game datagrams at the sizes that matter, not toy payloads. 1200 was the
+    // only size this test used to send. 2800 is the dungeon-join packet that
+    // failed in the field with JUICE_ERR_TOO_LARGE. 9184 is the receive buffer
+    // the game sizes its P2P socket to, past libjuice's own 4096-byte receive
+    // buffer. The last is the largest frame the P2P socket layer hands over.
+    const size_t sizes[] = {1200, 2800, 9184, 65507};
+    for (size_t size : sizes) {
+        std::vector<u8> payload(size);
+        for (size_t i = 0; i < payload.size(); ++i) {
+            payload[i] = static_cast<u8>(i * 7 + size);
+        }
+        {
             std::lock_guard lock(received_mutex);
-            return !answerer_received.empty();
-        },
-        5);
-    CHECK(delivered);
+            answerer_received.clear();
+        }
+        const bool sent =
+            CHECK(offerer.Send(payload.data(), payload.size()) == static_cast<int>(payload.size()));
 
-    if (delivered) {
+        const bool delivered = sent && WaitUntil(
+                                           [&] {
+                                               std::lock_guard lock(received_mutex);
+                                               return !answerer_received.empty();
+                                           },
+                                           5);
+        if (!CHECK(delivered)) {
+            std::printf("datagram of %zu bytes was not delivered\n", size);
+            continue;
+        }
+
         std::lock_guard lock(received_mutex);
         CHECK(answerer_received.size() == 1);
         CHECK(answerer_received[0].payload.size() == payload.size());
-        CHECK(std::memcmp(answerer_received[0].payload.data(), payload.data(), payload.size()) ==
-              0);
+        CHECK(answerer_received[0].payload == payload);
         // The sender's identity comes from the connection that delivered the
         // datagram, so the answerer must see the offerer's virtual address.
         CHECK(answerer_received[0].from_addr_nbo == addr_offerer);
