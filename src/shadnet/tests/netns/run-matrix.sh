@@ -115,8 +115,8 @@ run_pair_expect_failure() {
 # Cases
 # --------------------------------------------------------------------------
 
-CASES=(same-lan two-nats lan-and-external symmetric-turn overlapping-subnets
-       ipv6-only dual-stack-v4-broken turn-credential-expired)
+CASES=(same-lan two-nats lan-and-external symmetric-turn narrow-mtu-relay
+       overlapping-subnets ipv6-only dual-stack-v4-broken turn-credential-expired)
 
 # Both peers on one LAN. The pair must be host: if a case this simple reaches
 # for a reflexive or relayed candidate, the agent is ignoring local interfaces
@@ -183,6 +183,35 @@ case_symmetric_turn() {
     lab_turn_credential "labpeer"
 
     run_pair lab-hostA1 lab-hostB1 symmetric-turn \
+        --stun "${SRV_ADDR}:3478" \
+        --turn "${SRV_ADDR}:3478" \
+        --turn-user "$LAB_TURN_USER" --turn-pass "$LAB_TURN_PASS" \
+        --expect-relayed --expect-family ipv4 \
+        --timeout 45
+}
+
+# The relayed topology again, with both hosts behind a 1280-byte link: the
+# path that failed in the field, where one player's traffic left through
+# Cloudflare WARP to the other's relay allocation. Every agent sends datagrams
+# well past that size, and they only arrive if each wire datagram is split to
+# fit.
+#
+# It also covers the leg symmetric-turn cannot: the relay delivering to an
+# allocation's owner as a TURN Data indication, which carries some 80 bytes
+# of STUN around each piece rather than ChannelData's 4. Pieces budgeted for
+# ChannelData alone pass everywhere else and are dropped here.
+case_narrow_mtu_relay() {
+    lab_make_internet
+    lab_make_server
+    lab_make_site A 1 2 symmetric
+    lab_make_site B 2 3 symmetric
+    lab_block_direct 2 3
+    lab_set_mtu lab-hostA1 lan 1280
+    lab_set_mtu lab-hostB1 lan 1280
+    lab_start_turn || return 1
+    lab_turn_credential "labpeer"
+
+    run_pair lab-hostA1 lab-hostB1 narrow-mtu-relay \
         --stun "${SRV_ADDR}:3478" \
         --turn "${SRV_ADDR}:3478" \
         --turn-user "$LAB_TURN_USER" --turn-pass "$LAB_TURN_PASS" \

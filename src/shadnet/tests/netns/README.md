@@ -73,6 +73,7 @@ so the matrix passed or failed by timing.
 | `two-nats` | srflx both sides: hole punching works through cone NAT |
 | `lan-and-external` | one open peer, one NATed; no relay needed |
 | `symmetric-turn` | endpoint-dependent NAT, direct path blocked → relayed |
+| `narrow-mtu-relay` | as `symmetric-turn`, both hosts on 1280-byte links → datagrams past the MTU still arrive whole |
 | `overlapping-subnets` | both LANs on `10.1.0.0/24` → srflx, not a wrong-host connection |
 | `ipv6-only` | IPv4 stripped entirely → host pair on IPv6 |
 | `dual-stack-v4-broken` | IPv4 peer path blocked → finishes over IPv6 |

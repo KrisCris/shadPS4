@@ -51,6 +51,7 @@ endif()
 add_executable(peer_netns_agent
     "${SHADPS4_ROOT}/src/shadnet/tests/peer_netns_agent.cpp"
     "${SHADPS4_ROOT}/src/shadnet/peer_connection.cpp"
+    "${SHADPS4_ROOT}/src/shadnet/peer_datagram.cpp"
 )
 
 target_include_directories(peer_netns_agent PRIVATE "${SHADPS4_ROOT}/src")

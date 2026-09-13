@@ -25,9 +25,10 @@
 // stand-in keeps a failure in this matrix attributable to ICE.
 //
 // The exit code is the assertion. An agent exits 0 only when it connected,
-// carried a datagram both ways, saw no role conflict, and the nominated pair
-// matched --expect-local / --expect-remote.
+// carried game-sized datagrams both ways, saw no role conflict, and the
+// nominated pair matched --expect-local / --expect-remote.
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -86,6 +87,11 @@ using ShadNet::PeerTransportState;
 // datagram assertions below check the identity the real code would carry.
 constexpr u32 kOffererVirtualAddr = 0xC6120005u;  // 198.18.0.5
 constexpr u32 kAnswererVirtualAddr = 0xC612012Au; // 198.18.1.42
+
+// Sent by every case, because a path that carries 1200 bytes says nothing
+// about 2800. 2800 is the Chalice Dungeon join that failed in the field with
+// JUICE_ERR_TOO_LARGE; 9184 is what the game sizes its P2P receive buffer to.
+constexpr size_t kDatagramSizes[] = {1200, 2800, 9184};
 
 std::atomic<bool> g_role_conflict{false};
 juice_log_level_t g_juice_print_level = JUICE_LOG_LEVEL_WARN;
@@ -582,36 +588,43 @@ int RunAgent(const Options& options) {
     if (state == PeerTransportState::Connected) {
         SplitPair(connection.SelectedPath(), &local_candidate, &remote_candidate);
 
-        // A 1200-byte payload, because a datagram that only proves the path
-        // exists at 4 bytes says nothing about whether it survives at the size
-        // the game actually sends.
-        std::vector<u8> payload(1200);
-        for (size_t i = 0; i < payload.size(); ++i) {
-            payload[i] = static_cast<u8>(i * 7 + 3);
-        }
-        if (connection.Send(payload.data(), payload.size()) != static_cast<int>(payload.size())) {
-            std::printf("RESULT role=%s status=send-failed\n", options.role.c_str());
-            ++failures;
+        std::vector<std::vector<u8>> payloads;
+        for (size_t size : kDatagramSizes) {
+            std::vector<u8> payload(size);
+            for (size_t i = 0; i < payload.size(); ++i) {
+                payload[i] = static_cast<u8>(i * 7 + size);
+            }
+            if (connection.Send(payload.data(), payload.size()) !=
+                static_cast<int>(payload.size())) {
+                std::printf("RESULT role=%s status=send-failed size=%zu\n", options.role.c_str(),
+                            size);
+                ++failures;
+            }
+            payloads.push_back(std::move(payload));
         }
 
         // Both sides send and both sides expect, so neither has to know which
         // one goes first.
         std::unique_lock lock(received_mutex);
-        const bool got =
-            received_cv.wait_for(lock, std::chrono::seconds(10), [&] { return !received.empty(); });
+        const bool got = received_cv.wait_for(lock, std::chrono::seconds(10),
+                                              [&] { return received.size() >= payloads.size(); });
         if (!got) {
-            std::printf("RESULT role=%s status=no-datagram\n", options.role.c_str());
+            std::printf("RESULT role=%s status=missing-datagrams got=%zu want=%zu\n",
+                        options.role.c_str(), received.size(), payloads.size());
             ++failures;
-        } else {
-            const u32 expected_from =
-                htonl(is_offerer ? kAnswererVirtualAddr : kOffererVirtualAddr);
-            if (received[0].first != expected_from) {
-                std::printf("RESULT role=%s status=wrong-source-addr\n", options.role.c_str());
+        }
+        const u32 expected_from = htonl(is_offerer ? kAnswererVirtualAddr : kOffererVirtualAddr);
+        for (const std::vector<u8>& payload : payloads) {
+            // UDP promises no order, so match on content rather than position.
+            const auto match =
+                std::find_if(received.begin(), received.end(),
+                             [&payload](const auto& r) { return r.second == payload; });
+            if (match == received.end()) {
+                std::printf("RESULT role=%s status=no-datagram size=%zu\n", options.role.c_str(),
+                            payload.size());
                 ++failures;
-            }
-            if (received[0].second.size() != payload.size()) {
-                std::printf("RESULT role=%s status=wrong-size got=%zu\n", options.role.c_str(),
-                            received[0].second.size());
+            } else if (match->first != expected_from) {
+                std::printf("RESULT role=%s status=wrong-source-addr\n", options.role.c_str());
                 ++failures;
             }
         }

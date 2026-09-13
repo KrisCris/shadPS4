@@ -255,6 +255,15 @@ lab_break_ipv4_between_peers() {
     in_ns "$INET_NS" iptables -A FORWARD -j DROP
 }
 
+# lab_set_mtu <ns> <ifname> <mtu>
+#
+# Narrows one link the way a tunnel does: Cloudflare WARP presents a 1280-byte
+# interface, the IPv6 minimum. libjuice sets DF, so the sender's own stack
+# refuses a larger datagram with EMSGSIZE rather than fragmenting it.
+lab_set_mtu() {
+    in_ns "$1" ip link set "$2" mtu "$3"
+}
+
 # Strips IPv4 from a host so nothing but IPv6 is left. A case that asserts an
 # IPv6 path is worth little if IPv4 was available and simply lost the race.
 lab_make_host_v6_only() {
